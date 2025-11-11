@@ -25,6 +25,7 @@ class Simulation:
         self.conversation_length = conversation_length
         self.total_conversations = total_conversations
         self.ranges = ranges
+        #import ipdb;ipdb.set_trace()
 
         self.inflights = deque() 
         self.conversationid_to_blocks = defaultdict(lambda: set()) #convid->block
@@ -40,7 +41,8 @@ class Simulation:
     def touch_conversation(self, conversation):
         conv_id = conversation.conv_id
         if (conversation.uses > 0):
-           self.hit_miss['hit' if len(self.conversationid_to_blocks[conv_id]) > 0 else 'miss'] += 1  
+            print(f"conv_id = {conv_id} num writes from previous touch is {self.num_writes - conversation.prev_touch}")
+            self.hit_miss['hit' if len(self.conversationid_to_blocks[conv_id]) > 0 else 'miss'] += 1  
         if len(self.conversationid_to_blocks[conv_id]) == 0: 
             curr_range = (self.num_writes // self.consecutive_writes_in_range) % self.ranges
             block = curr_range * self.range_len + random.randrange(self.range_len)
@@ -48,20 +50,17 @@ class Simulation:
             self.conversationid_to_blocks[self.block_to_conversationid[block]].discard(block)
             self.conversationid_to_blocks[conv_id].add(block) 
             self.block_to_conversationid[block] = conv_id
+            conversation.prev_touch = self.num_writes
             self.num_writes += 1
         conversation.uses += 1
-    
-    def add_new_conversation(self):
-        c = Conversation(self.next_conv_id) 
-        self.touch_conversation(c)
-        self.next_conv_id += 1
-        return c
 
     def run(self):
+        #import ipdb;ipdb.set_trace()
         finished_conversations = 0
         while finished_conversations < self.total_conversations:
             if len(self.inflights) < self.inflight_conversations:
-                c = self.add_new_conversation()
+                c = Conversation(self.next_conv_id) 
+                self.next_conv_id += 1 
             else:
                 c = self.inflights.popleft()
                 self.touch_conversation(c)
