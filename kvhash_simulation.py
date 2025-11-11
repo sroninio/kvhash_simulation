@@ -68,12 +68,13 @@ class Simulation:
                 self.inflights.append(c)
             else:
                 finished_conversations += 1
-                if (finished_conversations % 1000) == 0:
-                    print(finished_conversations)
+                #if (finished_conversations % 1000) == 0:
+                    #print(finished_conversations)
         total = self.hit_miss['hit'] + self.hit_miss['miss']
         hit_rate = (self.hit_miss['hit'] / total * 100) if total > 0 else 0
-        print(f"Hit Rate: {hit_rate:.2f}% ({self.hit_miss['hit']}/{total})")
-        print(f"Hits: {self.hit_miss['hit']}, Misses: {self.hit_miss['miss']}")   
+        #print(f"Hit Rate: {hit_rate:.2f}% ({self.hit_miss['hit']}/{total})")
+        #print(f"Hits: {self.hit_miss['hit']}, Misses: {self.hit_miss['miss']}")   
+        return hit_rate
             
 
 if __name__ == "__main__":
@@ -112,6 +113,15 @@ if __name__ == "__main__":
     )
     
     args = parser.parse_args()
+
     s = Simulation(blocks_in_storage=args.blocks_in_storage, inflight_conversations=args.inflight_conversations, conversation_length=args.conversation_length, total_conversations=args.total_conversations, ranges=args.ranges)
-    s.run()
+    print (s.run())
+    '''
+    for inflights in [1000,2000,3000,4000,5000,6000,7000,8000,9000,10000, 11000, 20000]:
+        res = []
+        for ranges in range(1,10):
+            res.append(Simulation(blocks_in_storage=10000, inflight_conversations=inflights, conversation_length=4, total_conversations=100000, ranges=ranges).run())
+        print(f"inflights = {inflights} results = {res}")
+    '''
+    
 
