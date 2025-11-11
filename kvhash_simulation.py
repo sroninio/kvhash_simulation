@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-
-
-
-
 import argparse
 import random
 import math
 from collections import defaultdict
+from collections import deque
+
 
 
 class Conversation:
-    def __init__(self):
+    def __init__(self, conv_id):
         self.uses = 0
+        self.conv_id = conv_id
+
 
 
 class Simulation:
@@ -26,7 +26,7 @@ class Simulation:
         self.total_conversations = total_conversations
         self.ranges = ranges
 
-        self.inflights = dict() #convid->conversation
+        self.inflights = deque() 
         self.conversationid_to_blocks = defaultdict(lambda: set()) #convid->block
         self.block_to_conversationid = defaultdict(lambda: -1) #block->convid
         self.hit_miss = {'hit' : 0, 'miss' :0}
@@ -37,9 +37,9 @@ class Simulation:
         self.next_conv_id = 0
 
     
-    def touch_conversation(self, conv_id):
-        conversation = self.inflights[conv_id]
-        if (conversation.uses > 0) and (len(self.inflights) == self.inflight_conversations):
+    def touch_conversation(self, conversation):
+        conv_id = conversation.conv_id
+        if (conversation.uses > 0):
            self.hit_miss['hit' if len(self.conversationid_to_blocks[conv_id]) > 0 else 'miss'] += 1  
         if len(self.conversationid_to_blocks[conv_id]) == 0: 
             curr_range = (self.num_writes // self.consecutive_writes_in_range) % self.ranges
@@ -52,23 +52,29 @@ class Simulation:
         conversation.uses += 1
     
     def add_new_conversation(self):
-        self.inflights[self.next_conv_id] = Conversation() 
-        self.touch_conversation(self.next_conv_id)
+        c = Conversation(self.next_conv_id) 
+        self.touch_conversation(c)
         self.next_conv_id += 1
-        return self.next_conv_id - 1
+        return c
 
     def run(self):
         finished_conversations = 0
         while finished_conversations < self.total_conversations:
             if len(self.inflights) < self.inflight_conversations:
-                conv_id = self.add_new_conversation()
+                c = self.add_new_conversation()
             else:
-                conv_id = random.choice(list(self.inflights.keys())) 
-                self.touch_conversation(conv_id)
-            if self.inflights[conv_id].uses >= self.conversation_length:
+                c = self.inflights.popleft()
+                self.touch_conversation(c)
+            if c.uses < self.conversation_length:
+                self.inflights.append(c)
+            else:
                 finished_conversations += 1
-                del self.inflights[conv_id]
-        print (self.hit_miss)   
+                if (finished_conversations % 1000) == 0:
+                    print(finished_conversations)
+        total = self.hit_miss['hit'] + self.hit_miss['miss']
+        hit_rate = (self.hit_miss['hit'] / total * 100) if total > 0 else 0
+        print(f"Hit Rate: {hit_rate:.2f}% ({self.hit_miss['hit']}/{total})")
+        print(f"Hits: {self.hit_miss['hit']}, Misses: {self.hit_miss['miss']}")   
             
 
 if __name__ == "__main__":
