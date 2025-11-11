@@ -18,7 +18,7 @@ class Simulation:
     def __init__(self, blocks_in_storage, inflight_conversations, conversation_length, total_conversations, ranges) -> None:
         if blocks_in_storage % ranges != 0:
             print(f"Error: blocks_in_storage ({blocks_in_storage}) must be divisible by ranges ({ranges})")
-            exit(1)
+            #exit(1)
         
         self.blocks_in_storage = blocks_in_storage
         self.inflight_conversations = inflight_conversations
@@ -28,8 +28,8 @@ class Simulation:
         #import ipdb;ipdb.set_trace()
 
         self.inflights = deque() 
-        self.conversationid_to_blocks = defaultdict(lambda: set()) #convid->block
-        self.block_to_conversationid = defaultdict(lambda: -1) #block->convid
+        self.conversationid_to_blocks = {}
+        self.block_to_conversationid = {}
         self.hit_miss = {'hit' : 0, 'miss' :0}
 
         self.range_len = self.blocks_in_storage // self.ranges
@@ -40,17 +40,17 @@ class Simulation:
     
     def touch_conversation(self, conversation):
         conv_id = conversation.conv_id
+        #print (f"Touching {conv_id}, use = {conversation.uses} conv_to_block = {self.conversationid_to_blocks}, block_to_conv = {self.block_to_conversationid}")
         if (conversation.uses > 0):
-            print(f"conv_id = {conv_id} num writes from previous touch is {self.num_writes - conversation.prev_touch}")
-            self.hit_miss['hit' if len(self.conversationid_to_blocks[conv_id]) > 0 else 'miss'] += 1  
-        if len(self.conversationid_to_blocks[conv_id]) == 0: 
+            self.hit_miss['hit' if conv_id in self.conversationid_to_blocks else 'miss'] += 1  
+        if not conv_id in self.conversationid_to_blocks:          
             curr_range = (self.num_writes // self.consecutive_writes_in_range) % self.ranges
             block = curr_range * self.range_len + random.randrange(self.range_len)
-            #print(f"Writing to range {curr_range} block {block}")
-            self.conversationid_to_blocks[self.block_to_conversationid[block]].discard(block)
-            self.conversationid_to_blocks[conv_id].add(block) 
-            self.block_to_conversationid[block] = conv_id
-            conversation.prev_touch = self.num_writes
+            if block in self.block_to_conversationid:
+                conv_owner = self.block_to_conversationid[block] 
+                del self.conversationid_to_blocks[conv_owner] 
+            self.conversationid_to_blocks[conv_id] = block
+            self.block_to_conversationid[block] = conv_id 
             self.num_writes += 1
         conversation.uses += 1
 
