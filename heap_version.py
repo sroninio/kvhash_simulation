@@ -27,7 +27,7 @@ class Conversation:
         self.slot_offset = -1 if virtual_agent_range_size_in_blocks == 1 else random.randrange(disk_size_in_blocks // virtual_agent_range_size_in_blocks) * virtual_agent_range_size_in_blocks 
 
     def is_finished(self):
-        return (len(self.kvs) == self.conversation_length)
+        return (len(self.kvs) >= self.conversation_length)
     
 
 

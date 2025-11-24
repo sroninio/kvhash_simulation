@@ -11,9 +11,6 @@ class Conversation:
     def __init__(self, conv_id):
         self.uses = 0
         self.conv_id = conv_id
-
-
-
 class Simulation:
     def __init__(self, blocks_in_storage, inflight_conversations, conversation_length, total_conversations, ranges) -> None:
         if blocks_in_storage % ranges != 0:
