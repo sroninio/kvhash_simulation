@@ -20,11 +20,10 @@ class Block:
     
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length, disk_size_in_blocks, virtual_agent_range_size_in_blocks):
+    def __init__(self, conv_id, conversation_length, disk_size_in_blocks):
         self.conv_id = conv_id
         self.conversation_length = conversation_length 
         self.kvs = []
-        self.slot_offset = -1 if virtual_agent_range_size_in_blocks == 1 else random.randrange(disk_size_in_blocks // virtual_agent_range_size_in_blocks) * virtual_agent_range_size_in_blocks 
 
     def is_finished(self):
         return (len(self.kvs) >= self.conversation_length)
@@ -32,27 +31,19 @@ class Conversation:
 
 
 class System:
-    def __init__(self, disk_size_in_blocks, virtual_agent_range_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss):
-        if disk_size_in_blocks % virtual_agent_range_size_in_blocks != 0:
-            print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by virtual_agent_range_size_in_blocks ({virtual_agent_range_size_in_blocks})")
+    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss, ranges):
+        if disk_size_in_blocks % ranges != 0:
+            print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
         
-        if allocate_new_on_miss and virtual_agent_range_size_in_blocks > 1:
-            print(f"Error: allocate_new_on_miss ({allocate_new_on_miss}) is not supported with virtual_agent_range_size_in_blocks > 1 ({virtual_agent_range_size_in_blocks})")
-            exit(1)
-        
-        if 1 < virtual_agent_range_size_in_blocks < num_queries_per_agent_upper:
-            print(f"Error: virtual_agent_range_size_in_blocks ({virtual_agent_range_size_in_blocks}) must be at least num_queries_per_agent_upper ({num_queries_per_agent_upper})")
-            exit(1)
-
         self.disk_size_in_blocks = disk_size_in_blocks
-        self.virtual_agent_range_size_in_blocks = virtual_agent_range_size_in_blocks
         self.num_queries_per_agent_lower = num_queries_per_agent_lower
         self.num_queries_per_agent_upper = num_queries_per_agent_upper
         self.allow_holes_recalculation = allow_holes_recalculation
         self.num_inflight_agents = num_inflight_agents
         self.iterations = iterations
         self.allocate_new_on_miss = allocate_new_on_miss
+        self.ranges = ranges
 
         self.prev_conv_id = 0
         self.events = []  # Min heap for events
@@ -62,20 +53,27 @@ class System:
         self.T = 0
         self.misses = 0
         self.hits = 0
+        self.total_accesses = 0
+        self.total_writes = 0
+
         
         print("=== Simulation Parameters ===")
         print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
-        print(f"virtual_agent_range_size_in_blocks: {self.virtual_agent_range_size_in_blocks}")
         print(f"num_queries_per_agent_lower: {self.num_queries_per_agent_lower}")
         print(f"num_queries_per_agent_upper: {self.num_queries_per_agent_upper}")
         print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
         print(f"num_inflight_agents: {self.num_inflight_agents}")
         print(f"iterations: {self.iterations}")
         print(f"allocate_new_on_miss: {self.allocate_new_on_miss}")
+        print(f"ranges: {self.ranges}")
         print("=============================\n")
 
+
     def alloc_block(self, conv, indx_in_conv):
-        block_offset = conv.slot_offset + indx_in_conv if conv.slot_offset != -1 else random.randrange(self.disk_size_in_blocks) 
+        range_len = self.disk_size_in_blocks // self.ranges
+        consecutive_operations_before_moving_range = (self.num_inflight_agents * ((self.num_queries_per_agent_lower + self.num_queries_per_agent_upper) // 2)) // self.ranges
+        range_idx = ((self.total_accesses // consecutive_operations_before_moving_range) % self.ranges)
+        block_offset = range_idx * range_len + random.randrange(range_len) 
         return self.disk[block_offset]
 
     def handle_conversation_return_event(self, conv):
@@ -95,6 +93,7 @@ class System:
         kv = self.alloc_block(conv, len(conv.kvs))
         kv.take_ownership(conv.conv_id, len(conv.kvs))
         conv.kvs.append(kv)
+        self.total_accesses += len(conv.kvs)
         
     def handle_statistic_event(self):
         pass
@@ -120,7 +119,7 @@ class System:
                     self.finished_conversations += 1
                     self.inflights -= 1
             while self.inflights < self.num_inflight_agents:
-                conv = Conversation(self.get_unique_id(), random.randint(self.num_queries_per_agent_lower, self.num_queries_per_agent_upper), self.disk_size_in_blocks, self.virtual_agent_range_size_in_blocks)
+                conv = Conversation(self.get_unique_id(), random.randint(self.num_queries_per_agent_lower, self.num_queries_per_agent_upper), self.disk_size_in_blocks)
                 heapq.heappush(self.events, (self.T + random.random(), {'type': 'conv', 'conv': conv})) 
                 self.inflights += 1
         
@@ -132,16 +131,16 @@ class System:
         
             
 
-def main(disk_size_in_blocks, virtual_agent_range_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss):
+def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss, ranges):
     system = System(
         disk_size_in_blocks=disk_size_in_blocks,
-        virtual_agent_range_size_in_blocks=virtual_agent_range_size_in_blocks,
         num_queries_per_agent_lower=num_queries_per_agent_lower,
         num_queries_per_agent_upper=num_queries_per_agent_upper,
         allow_holes_recalculation=allow_holes_recalculation,
         num_inflight_agents=num_inflight_agents,
         iterations=iterations,
-        allocate_new_on_miss=allocate_new_on_miss
+        allocate_new_on_miss=allocate_new_on_miss,
+        ranges=ranges
     )
     system.simulate()
 
@@ -151,12 +150,6 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--disk_size_in_blocks",
-        type=int,
-        required=True
-    )
-    
-    parser.add_argument(
-        "--virtual_agent_range_size_in_blocks",
         type=int,
         required=True
     )
@@ -197,15 +190,21 @@ if __name__ == "__main__":
         required=True
     )
     
+    parser.add_argument(
+        "--ranges",
+        type=int,
+        required=True
+    )
+    
     args = parser.parse_args()
     
     main(
         disk_size_in_blocks=args.disk_size_in_blocks,
-        virtual_agent_range_size_in_blocks=args.virtual_agent_range_size_in_blocks,
         num_queries_per_agent_lower=args.num_queries_per_agent_lower,
         num_queries_per_agent_upper=args.num_queries_per_agent_upper,
         allow_holes_recalculation=args.allow_holes_recalculation,
         num_inflight_agents=args.num_inflight_agents,
         iterations=args.iterations,
-        allocate_new_on_miss=args.allocate_new_on_miss
+        allocate_new_on_miss=args.allocate_new_on_miss,
+        ranges=args.ranges
     )
