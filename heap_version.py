@@ -154,7 +154,7 @@ def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent
                     num_queries_per_agent_upper=steps,
                     allow_holes_recalculation=1,
                     num_inflight_agents=agents // SIM_RATIO,
-                    iterations=iterations,
+                    iterations=1500 // steps,
                     random_placement_on_miss=0,
                     ranges=ranges_val,
                     evict_on_miss=1,
