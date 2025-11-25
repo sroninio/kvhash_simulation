@@ -6,9 +6,10 @@ import random
 
 
 class Block:
-    def __init__(self):
+    def __init__(self, offset):
         self.owner_conv_id = -1
         self.owner_pos_in_conv = -1
+        self.offset = offset
     
     def is_belongs_to(self, conv_id, pos_in_conv):
         return (self.owner_conv_id == conv_id) and (self.owner_pos_in_conv == pos_in_conv)
@@ -47,7 +48,7 @@ class System:
 
         self.prev_conv_id = 0
         self.events = []  # Min heap for events
-        self.disk = [Block() for _ in range(self.disk_size_in_blocks)]
+        self.disk = [Block(indx) for indx in range(self.disk_size_in_blocks)]
         self.finished_conversations = 0
         self.inflights = 0
         self.T = 0
@@ -69,12 +70,13 @@ class System:
         print("=============================\n")
 
 
-    def alloc_block(self, conv, indx_in_conv):
+    def alloc_block(self, block):
         range_len = self.disk_size_in_blocks // self.ranges
         consecutive_operations_before_moving_range = (self.num_inflight_agents * ((self.num_queries_per_agent_lower + self.num_queries_per_agent_upper) // 2)) // self.ranges
         range_idx = ((self.total_accesses // consecutive_operations_before_moving_range) % self.ranges)
-        block_offset = range_idx * range_len + random.randrange(range_len) 
-        return self.disk[block_offset]
+        offset_in_range = random.randrange(range_len) if not block else (block.offset % range_len)
+        block_offset = range_idx * range_len + offset_in_range 
+        return self.disk[block_offset] 
 
     def handle_conversation_return_event(self, conv):
         disable_all = False
@@ -88,9 +90,9 @@ class System:
                 self.misses += 1
             if not valid_kv:
                 if self.allocate_new_on_miss:
-                    conv.kvs[indx] = self.alloc_block(conv, indx)
+                    conv.kvs[indx] = self.alloc_block(conv.kvs[indx])
                 conv.kvs[indx].take_ownership(conv.conv_id, indx)
-        kv = self.alloc_block(conv, len(conv.kvs))
+        kv = self.alloc_block(None)
         kv.take_ownership(conv.conv_id, len(conv.kvs))
         conv.kvs.append(kv)
         self.total_accesses += len(conv.kvs)
