@@ -32,7 +32,7 @@ class Conversation:
 
 
 class System:
-    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges):
+    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -45,6 +45,7 @@ class System:
         self.iterations = iterations
         self.random_placement_on_miss = random_placement_on_miss
         self.ranges = ranges
+        self.evict_on_miss = evict_on_miss
 
         self.prev_conv_id = 0
         self.events = []  # Min heap for events
@@ -67,6 +68,7 @@ class System:
         print(f"iterations: {self.iterations}")
         print(f"random_placement_on_miss: {self.random_placement_on_miss}")
         print(f"ranges: {self.ranges}")
+        print(f"evict_on_miss: {self.evict_on_miss}")
         print("=============================\n")
 
 
@@ -89,7 +91,7 @@ class System:
                 self.hits += 1
             else:
                 self.misses += 1
-            if not valid_kv:
+            if not valid_kv and self.evict_on_miss:
                 conv.kvs[indx] = self.alloc_block(conv.kvs[indx])
                 conv.kvs[indx].take_ownership(conv.conv_id, indx)
         kv = self.alloc_block(None)
@@ -133,7 +135,7 @@ class System:
         
             
 
-def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges):
+def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss):
     system = System(
         disk_size_in_blocks=disk_size_in_blocks,
         num_queries_per_agent_lower=num_queries_per_agent_lower,
@@ -142,7 +144,8 @@ def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent
         num_inflight_agents=num_inflight_agents,
         iterations=iterations,
         random_placement_on_miss=random_placement_on_miss,
-        ranges=ranges
+        ranges=ranges,
+        evict_on_miss=evict_on_miss
     )
     system.simulate()
 
@@ -198,6 +201,12 @@ if __name__ == "__main__":
         required=True
     )
     
+    parser.add_argument(
+        "--evict_on_miss",
+        type=int,
+        required=True
+    )
+    
     args = parser.parse_args()
     
     main(
@@ -208,5 +217,6 @@ if __name__ == "__main__":
         num_inflight_agents=args.num_inflight_agents,
         iterations=args.iterations,
         random_placement_on_miss=args.random_placement_on_miss,
-        ranges=args.ranges
+        ranges=args.ranges,
+        evict_on_miss=args.evict_on_miss
     )
