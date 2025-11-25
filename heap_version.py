@@ -162,13 +162,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_queries_per_agent_lower",
         type=int,
-        required=True
+        required=False
     )
     
     parser.add_argument(
         "--num_queries_per_agent_upper",
         type=int,
-        required=True
+        required=False
     )
     
     parser.add_argument(
@@ -208,6 +208,17 @@ if __name__ == "__main__":
     )
     
     args = parser.parse_args()
+    
+    # Validate and set num_queries_per_agent parameters
+    if args.num_queries_per_agent_lower is None and args.num_queries_per_agent_upper is None:
+        print("Error: At least one of --num_queries_per_agent_lower or --num_queries_per_agent_upper must be provided")
+        exit(1)
+    
+    if args.num_queries_per_agent_lower is None:
+        args.num_queries_per_agent_lower = args.num_queries_per_agent_upper
+    
+    if args.num_queries_per_agent_upper is None:
+        args.num_queries_per_agent_upper = args.num_queries_per_agent_lower
     
     main(
         disk_size_in_blocks=args.disk_size_in_blocks,
