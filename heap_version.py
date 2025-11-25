@@ -32,7 +32,7 @@ class Conversation:
 
 
 class System:
-    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss, ranges):
+    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -43,7 +43,7 @@ class System:
         self.allow_holes_recalculation = allow_holes_recalculation
         self.num_inflight_agents = num_inflight_agents
         self.iterations = iterations
-        self.allocate_new_on_miss = allocate_new_on_miss
+        self.random_placement_on_miss = random_placement_on_miss
         self.ranges = ranges
 
         self.prev_conv_id = 0
@@ -65,7 +65,7 @@ class System:
         print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
         print(f"num_inflight_agents: {self.num_inflight_agents}")
         print(f"iterations: {self.iterations}")
-        print(f"allocate_new_on_miss: {self.allocate_new_on_miss}")
+        print(f"random_placement_on_miss: {self.random_placement_on_miss}")
         print(f"ranges: {self.ranges}")
         print("=============================\n")
 
@@ -74,7 +74,8 @@ class System:
         range_len = self.disk_size_in_blocks // self.ranges
         consecutive_operations_before_moving_range = (self.num_inflight_agents * ((self.num_queries_per_agent_lower + self.num_queries_per_agent_upper) // 2)) // self.ranges
         range_idx = ((self.total_accesses // consecutive_operations_before_moving_range) % self.ranges)
-        offset_in_range = random.randrange(range_len) if not block else (block.offset % range_len)
+        #print(range_idx)
+        offset_in_range = random.randrange(range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % range_len)
         block_offset = range_idx * range_len + offset_in_range 
         return self.disk[block_offset] 
 
@@ -89,13 +90,12 @@ class System:
             else:
                 self.misses += 1
             if not valid_kv:
-                if self.allocate_new_on_miss:
-                    conv.kvs[indx] = self.alloc_block(conv.kvs[indx])
+                conv.kvs[indx] = self.alloc_block(conv.kvs[indx])
                 conv.kvs[indx].take_ownership(conv.conv_id, indx)
         kv = self.alloc_block(None)
         kv.take_ownership(conv.conv_id, len(conv.kvs))
         conv.kvs.append(kv)
-        self.total_accesses += len(conv.kvs)
+        self.total_accesses += 1
         
     def handle_statistic_event(self):
         pass
@@ -133,7 +133,7 @@ class System:
         
             
 
-def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, allocate_new_on_miss, ranges):
+def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges):
     system = System(
         disk_size_in_blocks=disk_size_in_blocks,
         num_queries_per_agent_lower=num_queries_per_agent_lower,
@@ -141,7 +141,7 @@ def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent
         allow_holes_recalculation=allow_holes_recalculation,
         num_inflight_agents=num_inflight_agents,
         iterations=iterations,
-        allocate_new_on_miss=allocate_new_on_miss,
+        random_placement_on_miss=random_placement_on_miss,
         ranges=ranges
     )
     system.simulate()
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        "--allocate_new_on_miss",
+        "--random_placement_on_miss",
         type=int,
         required=True
     )
@@ -207,6 +207,6 @@ if __name__ == "__main__":
         allow_holes_recalculation=args.allow_holes_recalculation,
         num_inflight_agents=args.num_inflight_agents,
         iterations=args.iterations,
-        allocate_new_on_miss=args.allocate_new_on_miss,
+        random_placement_on_miss=args.random_placement_on_miss,
         ranges=args.ranges
     )
