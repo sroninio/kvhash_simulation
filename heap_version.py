@@ -3,6 +3,7 @@
 import argparse
 import heapq
 import random
+import pandas as pd
 
 
 class Block:
@@ -30,9 +31,12 @@ class Conversation:
         return (len(self.kvs) >= self.conversation_length)
     
 
+class Disk:
+    def __init__(self, size):
+        self.disk = [Block(indx) for indx in range(size)] 
 
 class System:
-    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss):
+    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -47,9 +51,9 @@ class System:
         self.ranges = ranges
         self.evict_on_miss = evict_on_miss
 
-        self.prev_conv_id = 0
+        self.prev_conv_id = first_conv_id
         self.events = []  # Min heap for events
-        self.disk = [Block(indx) for indx in range(self.disk_size_in_blocks)]
+        self.disk = disk
         self.finished_conversations = 0
         self.inflights = 0
         self.T = 0
@@ -79,7 +83,7 @@ class System:
         #print(range_idx)
         offset_in_range = random.randrange(range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % range_len)
         block_offset = range_idx * range_len + offset_in_range 
-        return self.disk[block_offset] 
+        return self.disk.disk[block_offset] 
 
     def handle_conversation_return_event(self, conv):
         disable_all = False
@@ -132,22 +136,49 @@ class System:
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
         print(f"Hits: {self.hits}, Misses: {self.misses}")
+        return hit_rate
         
             
 
 def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss):
-    system = System(
-        disk_size_in_blocks=disk_size_in_blocks,
-        num_queries_per_agent_lower=num_queries_per_agent_lower,
-        num_queries_per_agent_upper=num_queries_per_agent_upper,
-        allow_holes_recalculation=allow_holes_recalculation,
-        num_inflight_agents=num_inflight_agents,
-        iterations=iterations,
-        random_placement_on_miss=random_placement_on_miss,
-        ranges=ranges,
-        evict_on_miss=evict_on_miss
-    )
-    system.simulate()
+    disk = Disk(disk_size_in_blocks)
+    first_conv_id = 0
+    results = []
+    SIM_RATIO = 10
+    for agents in [1000, 2000, 4000, 8000, 16000, 32000, 64000]:
+        for steps in [10,50,100,150]:
+            for ranges_val in [1, 4, 10]:
+                system = System(
+                    disk_size_in_blocks=disk_size_in_blocks // SIM_RATIO,
+                    num_queries_per_agent_lower=steps,
+                    num_queries_per_agent_upper=steps,
+                    allow_holes_recalculation=1,
+                    num_inflight_agents=agents // SIM_RATIO,
+                    iterations=iterations,
+                    random_placement_on_miss=0,
+                    ranges=ranges_val,
+                    evict_on_miss=1,
+                    disk=disk,
+                    first_conv_id=first_conv_id
+                )
+                hit_rate = system.simulate()
+                first_conv_id = system.prev_conv_id + 10
+                
+                # Collect results
+                results.append({
+                    'agents': agents,
+                    'steps': steps,
+                    'ranges': ranges_val,
+                    'disk_size_in_blocks': disk_size_in_blocks,
+                    'hit_rate': hit_rate,
+                })
+    
+    # Write results to Excel
+    df = pd.DataFrame(results)
+    output_file = 'simulation_results.xlsx'
+    df.to_excel(output_file, index=False)
+    print(f"\nResults written to {output_file}")
+                
 
 
 if __name__ == "__main__":
