@@ -37,7 +37,7 @@ class Disk:
         self.disk = [Block(indx) for indx in range(size)] 
 
 class System:
-    def __init__(self, disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, \
+    def __init__(self, disk_size_in_blocks, steps_lower, steps_upper, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
         time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate):
         if disk_size_in_blocks % ranges != 0:
@@ -45,8 +45,8 @@ class System:
             exit(1)
         
         self.disk_size_in_blocks = disk_size_in_blocks
-        self.num_queries_per_agent_lower = num_queries_per_agent_lower
-        self.num_queries_per_agent_upper = num_queries_per_agent_upper
+        self.steps_lower = steps_lower
+        self.steps_upper = steps_upper
         self.allow_holes_recalculation = allow_holes_recalculation
         self.num_inflight_agents = num_inflight_agents
         self.iterations = iterations
@@ -71,23 +71,36 @@ class System:
         self.conversations_queue = deque()
         self.free_gpus = self.total_gpus
         
+        avg_steps = (self.steps_lower + self.steps_upper) / 2
+        total_time_spent_between_steps = (avg_steps + 1) * time_between_steps
+        total_time_in_gpu = avg_steps * self.step_time_in_gpu
+        gpu_requests_per_second = self.total_gpus * (1 / total_time_in_gpu) 
+        total_agent_time = total_time_in_gpu + total_time_spent_between_steps
+        minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
 
         
-        print("=== Simulation Parameters ===")
-        print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
-        print(f"num_queries_per_agent_lower: {self.num_queries_per_agent_lower}")
-        print(f"num_queries_per_agent_upper: {self.num_queries_per_agent_upper}")
-        print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
-        print(f"num_inflight_agents: {self.num_inflight_agents}")
-        print(f"iterations: {self.iterations}")
-        print(f"random_placement_on_miss: {self.random_placement_on_miss}")
-        print(f"ranges: {self.ranges}")
-        print(f"evict_on_miss: {self.evict_on_miss}")
-        print(f"time_between_steps: {self.time_between_steps}")
-        print(f"total_gpus: {self.total_gpus}")
-        print(f"step_time_in_gpu: {self.step_time_in_gpu}")
-        print(f"to_check_cache_hit_rate: {self.to_check_cache_hit_rate}")
-        print("=============================")
+        print("\033[1;33m\n=============================\033[0m")
+        if self.to_check_cache_hit_rate:
+            print("CACHE PERF ANALISS")        
+            print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
+            print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
+            print(f"num_inflight_agents: {self.num_inflight_agents}")
+            print(f"iterations: {self.iterations}")
+            print(f"random_placement_on_miss: {self.random_placement_on_miss}")
+            print(f"ranges: {self.ranges}")
+            print(f"evict_on_miss: {self.evict_on_miss}")
+        else:
+            print("BW PERF ANALISS")        
+            print(f"total_gpus: {self.total_gpus}")
+            print(f"step_time_in_gpu: {self.step_time_in_gpu}")
+            print(f"steps_lower: {self.steps_lower}")
+            print(f"steps_upper: {self.steps_upper}")
+            print(f"time_between_steps: {self.time_between_steps}") 
+            print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
+            print("BW THEORETICAL NUMBERS")        
+            print(f"\033[1;34mmaximal possible gpu requests per second: {gpu_requests_per_second:.8f}\033[0m")
+            print(f"\033[1;31mminimal_agent_max_bw: {minimal_agent_max_bw:.2f}\033[0m")
+        
 
 
     def alloc_block(self, block):
@@ -171,7 +184,7 @@ class System:
                     conv = self.conversations_queue.popleft()
                     self.enter_conv_to_gpu(conv)
             while self.inflights < self.num_inflight_agents:
-                conv = Conversation(self.get_unique_id(), random.randint(self.num_queries_per_agent_lower, self.num_queries_per_agent_upper), self.disk_size_in_blocks)
+                conv = Conversation(self.get_unique_id(), random.randint(self.steps_lower, self.steps_upper), self.disk_size_in_blocks)
                 self.inflights += 1
                 self.enter_conv_to_sleep(conv)
                 
@@ -179,10 +192,14 @@ class System:
         # Print cache statistics
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
-        print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
-        print(f"Hits: {self.hits}, Misses: {self.misses}")
-        print(f"Time per iteration: {self.T / self.iterations:.4f}s")
-
+        if self.to_check_cache_hit_rate:
+            print("CACHE RESULTS")        
+            print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
+            print(f"Hits: {self.hits}, Misses: {self.misses}")
+        else:
+            print("BW RESULTS")        
+            print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
+        print("\033[1;33m=============================\033[0m")
         return hit_rate, self.T, self.iterations
         
             
@@ -196,8 +213,8 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
             for ranges_val in ranges_list:
                 system = System(
                     disk_size_in_blocks=disk_size_in_blocks // sim_ratio,
-                    num_queries_per_agent_lower=steps,
-                    num_queries_per_agent_upper=steps,
+                    steps_lower=steps,
+                    steps_upper=steps,
                     allow_holes_recalculation=allow_holes_recalculation,
                     num_inflight_agents=agents // sim_ratio,
                     iterations=iterations // (steps if to_check_cache_hit_rate else 1),
@@ -239,7 +256,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--disk_size_in_blocks",
         type=int,
-        required=True
+        default=0,
+        help="Disk size in blocks (default: 0)"
     )
     
     parser.add_argument(
@@ -290,14 +308,14 @@ if __name__ == "__main__":
         "--ranges_list",
         type=int,
         nargs='+',
-        default=[1, 4, 10],
+        default=[1],
         help="List of ranges values to test (default: 1 4 10)"
     )
     
     parser.add_argument(
         "--sim_ratio",
         type=int,
-        default=10,
+        default=1,
         help="Simulation ratio divider (default: 10)"
     )
     
@@ -311,8 +329,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--total_gpus",
         type=int,
-        required=True,
-        help="Total number of GPUs"
+        default=1,
+        help="Total number of GPUs (default: 1)"
     )
     
     parser.add_argument(
