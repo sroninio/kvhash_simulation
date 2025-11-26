@@ -140,24 +140,23 @@ class System:
         
             
 
-def main(disk_size_in_blocks, num_queries_per_agent_lower, num_queries_per_agent_upper, allow_holes_recalculation, num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
-    SIM_RATIO = 10
-    for agents in [1000, 2000, 4000, 8000, 16000, 32000, 64000]:
-        for steps in [10,50,100,150]:
-            for ranges_val in [1, 4, 10]:
+    for agents in agents_list:
+        for steps in steps_list:
+            for ranges_val in ranges_list:
                 system = System(
-                    disk_size_in_blocks=disk_size_in_blocks // SIM_RATIO,
+                    disk_size_in_blocks=disk_size_in_blocks // sim_ratio,
                     num_queries_per_agent_lower=steps,
                     num_queries_per_agent_upper=steps,
-                    allow_holes_recalculation=1,
-                    num_inflight_agents=agents // SIM_RATIO,
-                    iterations=1500 // steps,
-                    random_placement_on_miss=0,
+                    allow_holes_recalculation=allow_holes_recalculation,
+                    num_inflight_agents=agents // sim_ratio,
+                    iterations=iterations // steps,
+                    random_placement_on_miss=random_placement_on_miss,
                     ranges=ranges_val,
-                    evict_on_miss=1,
+                    evict_on_miss=evict_on_miss,
                     disk=disk,
                     first_conv_id=first_conv_id
                 )
@@ -191,74 +190,74 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        "--num_queries_per_agent_lower",
-        type=int,
-        required=False
-    )
-    
-    parser.add_argument(
-        "--num_queries_per_agent_upper",
-        type=int,
-        required=False
-    )
-    
-    parser.add_argument(
         "--allow_holes_recalculation",
         type=int,
-        required=True
-    )
-    
-    parser.add_argument(
-        "--num_inflight_agents",
-        type=int,
-        required=True
+        default=1,
+        help="Allow holes recalculation (default: 1)"
     )
     
     parser.add_argument(
         "--iterations",
         type=int,
-        required=True
+        default=1500,
+        help="Number of iterations (default: 1500)"
     )
     
     parser.add_argument(
         "--random_placement_on_miss",
         type=int,
-        required=True
-    )
-    
-    parser.add_argument(
-        "--ranges",
-        type=int,
-        required=True
+        default=0,
+        help="Random placement on miss (default: 0)"
     )
     
     parser.add_argument(
         "--evict_on_miss",
         type=int,
-        required=True
+        default=1,
+        help="Evict on miss (default: 1)"
+    )
+    
+    parser.add_argument(
+        "--agents_list",
+        type=int,
+        nargs='+',
+        default=[1000, 2000, 4000, 8000, 16000, 32000, 64000],
+        help="List of agent values to test (default: 1000 2000 4000 8000 16000 32000 64000)"
+    )
+    
+    parser.add_argument(
+        "--steps_list",
+        type=int,
+        nargs='+',
+        default=[10, 50, 100, 150],
+        help="List of step values to test (default: 10 50 100 150)"
+    )
+    
+    parser.add_argument(
+        "--ranges_list",
+        type=int,
+        nargs='+',
+        default=[1, 4, 10],
+        help="List of ranges values to test (default: 1 4 10)"
+    )
+    
+    parser.add_argument(
+        "--sim_ratio",
+        type=int,
+        default=10,
+        help="Simulation ratio divider (default: 10)"
     )
     
     args = parser.parse_args()
     
-    # Validate and set num_queries_per_agent parameters
-    if args.num_queries_per_agent_lower is None and args.num_queries_per_agent_upper is None:
-        print("Error: At least one of --num_queries_per_agent_lower or --num_queries_per_agent_upper must be provided")
-        exit(1)
-    
-    if args.num_queries_per_agent_lower is None:
-        args.num_queries_per_agent_lower = args.num_queries_per_agent_upper
-    
-    if args.num_queries_per_agent_upper is None:
-        args.num_queries_per_agent_upper = args.num_queries_per_agent_lower
-    
     main(
         disk_size_in_blocks=args.disk_size_in_blocks,
-        num_queries_per_agent_lower=args.num_queries_per_agent_lower,
-        num_queries_per_agent_upper=args.num_queries_per_agent_upper,
         allow_holes_recalculation=args.allow_holes_recalculation,
-        num_inflight_agents=args.num_inflight_agents,
-        iterations=args.iterations,
         random_placement_on_miss=args.random_placement_on_miss,
-        ranges=args.ranges,
-        evict_on_miss=args.evict_on_miss
+        evict_on_miss=args.evict_on_miss,
+        agents_list=args.agents_list,
+        steps_list=args.steps_list,
+        ranges_list=args.ranges_list,
+        sim_ratio=args.sim_ratio,
+        iterations=args.iterations
     )
