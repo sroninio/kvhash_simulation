@@ -80,7 +80,7 @@ class System:
         prev_range_idx = block.offset // self.range_len if block else -1
         while True:
             range_idx = random.randrange(self.ranges)
-            if range_idx != prev_range_idx:
+            if range_idx != prev_range_idx or self.ranges == 1:
                 break
         offset_in_range = random.randrange(self.range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % self.range_len)
         block_offset = range_idx * self.range_len + offset_in_range 
