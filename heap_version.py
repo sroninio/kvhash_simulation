@@ -50,6 +50,7 @@ class System:
         self.random_placement_on_miss = random_placement_on_miss
         self.ranges = ranges
         self.evict_on_miss = evict_on_miss
+        self.range_len = self.disk_size_in_blocks // self.ranges
 
         self.prev_conv_id = first_conv_id
         self.events = []  # Min heap for events
@@ -59,8 +60,7 @@ class System:
         self.T = 0
         self.misses = 0
         self.hits = 0
-        self.total_accesses = 0
-        self.total_writes = 0
+
 
         
         print("=== Simulation Parameters ===")
@@ -73,16 +73,17 @@ class System:
         print(f"random_placement_on_miss: {self.random_placement_on_miss}")
         print(f"ranges: {self.ranges}")
         print(f"evict_on_miss: {self.evict_on_miss}")
-        print("=============================\n")
+        print("=============================")
 
 
     def alloc_block(self, block):
-        range_len = self.disk_size_in_blocks // self.ranges
-        consecutive_operations_before_moving_range = (self.num_inflight_agents * ((self.num_queries_per_agent_lower + self.num_queries_per_agent_upper) // 2)) // self.ranges
-        range_idx = ((self.total_accesses // consecutive_operations_before_moving_range) % self.ranges)
-        #print(range_idx)
-        offset_in_range = random.randrange(range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % range_len)
-        block_offset = range_idx * range_len + offset_in_range 
+        prev_range_idx = block.offset // self.range_len if block else -1
+        while True:
+            range_idx = random.randrange(self.ranges)
+            if range_idx != prev_range_idx:
+                break
+        offset_in_range = random.randrange(self.range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % self.range_len)
+        block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
 
     def handle_conversation_return_event(self, conv):
@@ -101,7 +102,6 @@ class System:
         kv = self.alloc_block(None)
         kv.take_ownership(conv.conv_id, len(conv.kvs))
         conv.kvs.append(kv)
-        self.total_accesses += 1
         
     def handle_statistic_event(self):
         pass
@@ -135,7 +135,8 @@ class System:
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
-        print(f"Hits: {self.hits}, Misses: {self.misses}")
+        print(f"Hits: {self.hits}, Misses: {self.misses}\n")
+
         return hit_rate
         
             
