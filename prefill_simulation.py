@@ -23,13 +23,15 @@ class Block:
 
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length, disk_size_in_blocks):
+    def __init__(self, conv_id, conversation_length, disk_size_in_blocks, context_window_len):
         self.conv_id = conv_id
         self.conversation_length = conversation_length 
-        self.kvs = []
+        self.finished_steps = 0
+        self.context_window_len = context_window_len
+        self.kvs = deque()
 
     def is_finished(self):
-        return (len(self.kvs) >= self.conversation_length)
+        return (self.finished_steps >= self.conversation_length)
     
 
 class Disk:
@@ -39,7 +41,7 @@ class Disk:
 class System:
     def __init__(self, disk_size_in_blocks, steps_lower, steps_upper, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate):
+        time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate, context_window_size):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -58,6 +60,7 @@ class System:
         self.total_gpus = total_gpus
         self.step_time_in_gpu = step_time_in_gpu
         self.to_check_cache_hit_rate = to_check_cache_hit_rate
+        self.context_window_size = context_window_size
         
 
         self.prev_conv_id = first_conv_id
@@ -70,6 +73,7 @@ class System:
         self.hits = 0
         self.conversations_queue = deque()
         self.free_gpus = self.total_gpus
+        self.event_counter = 0  # Tie-breaker for heap events
         
         avg_steps = (self.steps_lower + self.steps_upper) / 2
         total_time_spent_between_steps = (avg_steps + 1) * time_between_steps
@@ -89,6 +93,8 @@ class System:
             print(f"random_placement_on_miss: {self.random_placement_on_miss}")
             print(f"ranges: {self.ranges}")
             print(f"evict_on_miss: {self.evict_on_miss}")
+            print(f"context_window_size: {self.context_window_size}")
+            print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * avg_steps)}")
         else:
             print("BW PERF ANALISS")        
             print(f"total_gpus: {self.total_gpus}")
@@ -119,26 +125,28 @@ class System:
         if not self.to_check_cache_hit_rate:
             return
         disable_all = False
-        for indx in range(len(conv.kvs)):
-            kv = conv.kvs[indx]
-            valid_kv = kv.is_belongs_to(conv.conv_id, indx) 
+        for _ in range(len(conv.kvs)):
+            kv, indx_in_conversation = conv.kvs.popleft()
+            valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
             disable_all = disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
             if (not disable_all) and valid_kv:
                 self.hits += 1
             else:
                 self.misses += 1
             if not valid_kv and self.evict_on_miss:
-                conv.kvs[indx] = self.alloc_block(conv.kvs[indx])
-                conv.kvs[indx].take_ownership(conv.conv_id, indx)
+                kv = self.alloc_block(kv)
+                kv.take_ownership(conv.conv_id, indx_in_conversation)
+            conv.kvs.append((kv, indx_in_conversation))
 
     
     def handle_gpu_finished(self, conv):
-        if not self.to_check_cache_hit_rate:
-            conv.kvs.append(12)
-            return
-        kv = self.alloc_block(None)
-        kv.take_ownership(conv.conv_id, len(conv.kvs))
-        conv.kvs.append(kv)
+        if self.to_check_cache_hit_rate:
+            kv = self.alloc_block(None)
+            kv.take_ownership(conv.conv_id, conv.finished_steps)
+            conv.kvs.append((kv, conv.finished_steps))
+            if len(conv.kvs) > conv.context_window_len:
+                conv.kvs.popleft()
+        conv.finished_steps += 1
 
         
     def handle_statistic_event(self):
@@ -148,29 +156,34 @@ class System:
         self.prev_conv_id += 1
         return self.prev_conv_id
     
+    def push_event(self, time, event_dict):
+        """Helper function to push events to heap with tie-breaker counter."""
+        self.event_counter += 1
+        heapq.heappush(self.events, (time, self.event_counter, event_dict))
+    
     def enter_conv_to_gpu(self, conv):
         if self.free_gpus > 0:
             self.free_gpus -= 1
-            heapq.heappush(self.events, (self.T + random.random() * 2 * self.step_time_in_gpu, {'type': 'gpu_finished', 'conv': conv}))
+            self.push_event(self.T + random.random() * 2 * self.step_time_in_gpu, {'type': 'gpu_finished', 'conv': conv})
         else:
             self.conversations_queue.append(conv)
     
     def enter_conv_to_sleep(self, conv):
         if not conv.is_finished():
-            heapq.heappush(self.events, (self.T + random.random() * 2 * self.time_between_steps, {'type': 'conv', 'conv': conv}))
+            self.push_event(self.T + random.random() * 2 * self.time_between_steps, {'type': 'conv', 'conv': conv})
         else:
             self.finished_conversations += 1
             self.inflights -= 1
 
 
     def simulate(self):
-        heapq.heappush(self.events, (self.T + 0.1, {'type': 'stat'}))
+        self.push_event(self.T + 0.1, {'type': 'stat'})
         while self.finished_conversations < self.iterations:
-            t, args = heapq.heappop(self.events)
+            t, counter, args = heapq.heappop(self.events)
             self.T = t
             if args['type'] == "stat":
                 self.handle_statistic_event()
-                heapq.heappush(self.events, (self.T + 0.1, {'type': 'stat'}))
+                self.push_event(self.T + 0.1, {'type': 'stat'})
             elif args['type'] == 'conv':
                 conv = args['conv']
                 self.handle_conversation_return_event(conv)
@@ -184,7 +197,7 @@ class System:
                     conv = self.conversations_queue.popleft()
                     self.enter_conv_to_gpu(conv)
             while self.inflights < self.num_inflight_agents:
-                conv = Conversation(self.get_unique_id(), random.randint(self.steps_lower, self.steps_upper), self.disk_size_in_blocks)
+                conv = Conversation(self.get_unique_id(), random.randint(self.steps_lower, self.steps_upper), self.disk_size_in_blocks, self.context_window_size)
                 self.inflights += 1
                 self.enter_conv_to_sleep(conv)
                 
@@ -204,7 +217,7 @@ class System:
         
             
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate, context_window_size):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -226,7 +239,8 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     time_between_steps=time_between_steps,
                     total_gpus=total_gpus,
                     step_time_in_gpu=step_time_in_gpu,
-                    to_check_cache_hit_rate=to_check_cache_hit_rate
+                    to_check_cache_hit_rate=to_check_cache_hit_rate,
+                    context_window_size=context_window_size if context_window_size > 0 else steps
                 )
                 hit_rate, total_time, total_iterations = system.simulate()
                 first_conv_id = system.prev_conv_id + 10
@@ -347,6 +361,13 @@ if __name__ == "__main__":
         help="Check cache hit rate (default: 1)"
     )
     
+    parser.add_argument(
+        "--context_window_size",
+        type=int,
+        default=0,
+        help="Context window size (default: 0)"
+    )
+    
     args = parser.parse_args()
     
     main(
@@ -362,5 +383,6 @@ if __name__ == "__main__":
         time_between_steps=args.time_between_steps,
         total_gpus=args.total_gpus,
         step_time_in_gpu=args.step_time_in_gpu,
-        to_check_cache_hit_rate=args.to_check_cache_hit_rate
+        to_check_cache_hit_rate=args.to_check_cache_hit_rate,
+        context_window_size=args.context_window_size
     )
