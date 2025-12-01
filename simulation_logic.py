@@ -40,7 +40,7 @@ class Disk:
 class System:
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate, context_window_size, force_hit_ratio):
+        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -63,7 +63,6 @@ class System:
         self.time_between_steps = time_between_steps
         self.total_gpus = total_gpus
         self.step_time_in_gpu = step_time_in_gpu
-        self.to_check_cache_hit_rate = to_check_cache_hit_rate
         self.context_window_size = context_window_size
         self.force_hit_ratio = force_hit_ratio
         
@@ -134,19 +133,17 @@ class System:
             waiting_conv = self.conversations_queue.popleft()
             self.enter_conv_to_gpu(waiting_conv)       
         while conv.phase_in_step < len(conv.kvs):
-            valid_kv = True
-            if self.to_check_cache_hit_rate:
-                kv, indx_in_conversation = conv.kvs.popleft()
-                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
-                conv.disable_all = conv.disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
-                if (not conv.disable_all) and valid_kv:
-                    self.hits += 1
-                else:
-                    self.misses += 1
-                if not valid_kv and self.evict_on_miss:
-                    kv = self.alloc_block(kv)
-                    kv.take_ownership(conv.conv_id, indx_in_conversation)
-                conv.kvs.append((kv, indx_in_conversation)) 
+            kv, indx_in_conversation = conv.kvs.popleft()
+            valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
+            conv.disable_all = conv.disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
+            if (not conv.disable_all) and valid_kv:
+                self.hits += 1
+            else:
+                self.misses += 1
+            if not valid_kv and self.evict_on_miss:
+                kv = self.alloc_block(kv)
+                kv.take_ownership(conv.conv_id, indx_in_conversation)
+            conv.kvs.append((kv, indx_in_conversation)) 
             conv.phase_in_step += 1
             to_recalculate = (random.random() > self.force_hit_ratio) if self.force_hit_ratio > 0 else (not valid_kv)
             if to_recalculate:
@@ -154,12 +151,11 @@ class System:
                 return
         if not conv.produced_new_block_in_this_step:
             conv.produced_new_block_in_this_step = True
-            if self.to_check_cache_hit_rate:
-                kv = self.alloc_block(None)
-                kv.take_ownership(conv.conv_id, conv.finished_steps)
-                conv.kvs.append((kv, conv.finished_steps))
-                if len(conv.kvs) > conv.context_window_len:
-                    conv.kvs.popleft()
+            kv = self.alloc_block(None)
+            kv.take_ownership(conv.conv_id, conv.finished_steps)
+            conv.kvs.append((kv, conv.finished_steps))
+            if len(conv.kvs) > conv.context_window_len:
+                conv.kvs.popleft()
             self.enter_conv_to_gpu(conv)
             return
         conv.finished_steps += 1

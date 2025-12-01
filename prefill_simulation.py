@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 from simulation_logic import System, Disk
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, to_check_cache_hit_rate, context_window_size, force_hit_ratio):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -16,7 +16,7 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     steps=steps,
                     allow_holes_recalculation=allow_holes_recalculation,
                     num_inflight_agents=agents // sim_ratio,
-                    iterations=iterations // (steps if to_check_cache_hit_rate else 1),
+                    iterations=iterations,
                     random_placement_on_miss=random_placement_on_miss,
                     ranges=ranges_val,
                     evict_on_miss=evict_on_miss,
@@ -25,7 +25,6 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     time_between_steps=time_between_steps,
                     total_gpus=total_gpus,
                     step_time_in_gpu=step_time_in_gpu,
-                    to_check_cache_hit_rate=to_check_cache_hit_rate,
                     context_window_size=context_window_size if context_window_size > 0 else steps,
                     force_hit_ratio=force_hit_ratio
                 )
@@ -142,13 +141,6 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        "--to_check_cache_hit_rate",
-        type=int,
-        default=1,
-        help="Check cache hit rate (default: 1)"
-    )
-    
-    parser.add_argument(
         "--context_window_size",
         type=int,
         default=0,
@@ -177,7 +169,6 @@ if __name__ == "__main__":
         time_between_steps=args.time_between_steps,
         total_gpus=args.total_gpus,
         step_time_in_gpu=args.step_time_in_gpu,
-        to_check_cache_hit_rate=args.to_check_cache_hit_rate,
         context_window_size=args.context_window_size,
         force_hit_ratio=args.force_hit_ratio
     )
