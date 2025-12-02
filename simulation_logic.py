@@ -2,18 +2,18 @@
 
 import heapq
 import random
+import math
 from collections import deque
 from abc import ABC, abstractmethod
 
 
 class Gpus(ABC):
-    def __init__(self, system, num_gpus, step_time_in_gpu):
+    def __init__(self, system, step_time_in_gpu):
         self.system = system
-        self.num_gpus = num_gpus
         self.step_time_in_gpu = step_time_in_gpu
     
     @abstractmethod
-    def enter_to_gpus(self, conv):
+    def enter_to_gpus(self, conv, blocks_to_calculate):
         """Virtual function to be implemented by subclasses"""
         pass
 
@@ -57,29 +57,44 @@ class ConversationManager:
         conv.produced_new_block_in_this_step = False
 
 
-class SimpleGpus(Gpus):
+class SharedGpus(Gpus):
     """Concrete implementation of Gpus abstract class"""
     
     def __init__(self, system, num_gpus, step_time_in_gpu):
-        super().__init__(system, num_gpus, step_time_in_gpu)
+        super().__init__(system, step_time_in_gpu)
         self.free_gpus = num_gpus
         self.gpu_queue = deque()
     
-    def enter_to_gpus(self, conv):
+    def enter_to_gpus(self, conv, blocks_to_calculate):
         if self.free_gpus > 0:
             self.free_gpus -= 1
             self.system.push_event(
-                self.system.T + random.random() * 2 * self.step_time_in_gpu,
-                {'type': 'back_from_gpu', 'conv': conv, 'gpu' : None}
+                self.system.T + random.random() * 2 * self.step_time_in_gpu * blocks_to_calculate,
+                {'type': 'back_from_gpu', 'conv': conv, 'gpu' : self}
             )
         else:
-            self.gpu_queue.append(conv)
+            self.gpu_queue.append((conv, blocks_to_calculate))
     
     def back_from_gpu(self, conv, gpu):
         self.free_gpus += 1
         while len(self.gpu_queue) > 0 and self.free_gpus > 0:
-            waiting_conv = self.gpu_queue.popleft()
-            self.enter_to_gpus(waiting_conv)
+            waiting_conv, blocks_to_calculate = self.gpu_queue.popleft()
+            self.enter_to_gpus(waiting_conv, blocks_to_calculate)
+
+
+class NonSharedGpus(Gpus):
+    """Concrete implementation of Gpus with dedicated GPU per conversation"""
+    
+    def __init__(self, system, num_gpus, step_time_in_gpu):
+        super().__init__(system, step_time_in_gpu)
+        self.gpus = [SharedGpus(system, 1, step_time_in_gpu) for _ in range(num_gpus)]
+
+    def enter_to_gpus(self, conv, blocks_to_calculate):
+        gpu = random.choice(self.gpus)
+        gpu.enter_to_gpus(conv, blocks_to_calculate)
+    
+    def back_from_gpu(self, conv, gpu):
+        gpu.back_from_gpu(conv, gpu)
 
 
 class Block:
@@ -119,7 +134,7 @@ class Disk:
 class System:
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio):
+        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -149,7 +164,10 @@ class System:
         self.event_counter = 0  # Tie-breaker for heap events
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
-        self.gpus = SimpleGpus(self, total_gpus, step_time_in_gpu)
+        if is_shared_storage:
+            self.gpus = SharedGpus(self, total_gpus, step_time_in_gpu)
+        else:
+            self.gpus = NonSharedGpus(self, total_gpus, step_time_in_gpu)
         
         total_time_spent_between_steps = (steps + 1) * time_between_steps
         total_time_in_gpu = steps * step_time_in_gpu
@@ -171,6 +189,7 @@ class System:
         print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * steps)}")
         print("BW PERF ANALISS")        
         print(f"total_gpus: {total_gpus}")
+        print(f"is_shared_storage: {is_shared_storage}")
         print(f"step_time_in_gpu: {step_time_in_gpu}")
         print(f"steps: {steps}")
         print(f"time_between_steps: {time_between_steps}") 
@@ -193,6 +212,13 @@ class System:
 
 
     def process_conversation(self, conv):     
+        if self.force_hit_ratio and conv.phase_in_step == 0: 
+            conv.phase_in_step = len(conv.kvs)
+            p_miss = 1 - self.force_hit_ratio
+            blocks_to_recalculate = math.ceil(p_miss * len(conv.kvs))
+            if blocks_to_recalculate > 0: 
+                self.gpus.enter_to_gpus(conv, blocks_to_recalculate)
+                return
         while conv.phase_in_step < len(conv.kvs):
             kv, indx_in_conversation = conv.kvs.popleft()
             valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
@@ -206,9 +232,8 @@ class System:
                 kv.take_ownership(conv.conv_id, indx_in_conversation)
             conv.kvs.append((kv, indx_in_conversation)) 
             conv.phase_in_step += 1
-            to_recalculate = (random.random() > self.force_hit_ratio) if self.force_hit_ratio > 0 else (not valid_kv)
-            if to_recalculate:
-                self.gpus.enter_to_gpus(conv)
+            if not valid_kv:
+                self.gpus.enter_to_gpus(conv, 1)
                 return
         if not conv.produced_new_block_in_this_step:
             conv.produced_new_block_in_this_step = True
@@ -217,7 +242,7 @@ class System:
             conv.kvs.append((kv, conv.finished_steps))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
-            self.gpus.enter_to_gpus(conv)
+            self.gpus.enter_to_gpus(conv, 1)
             return
         conv.finished_steps += 1
         self.conversation_manager.send_conversation_to_sleep(conv)
