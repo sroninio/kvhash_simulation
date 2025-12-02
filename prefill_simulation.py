@@ -29,7 +29,7 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     force_hit_ratio=force_hit_ratio
                 )
                 hit_rate, total_time, total_iterations = system.simulate()
-                first_conv_id = system.prev_conv_id + 10
+                first_conv_id = system.conversation_manager.conv_id + 10
                 
                 # Collect results
                 results.append({
