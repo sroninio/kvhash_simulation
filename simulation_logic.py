@@ -3,6 +3,83 @@
 import heapq
 import random
 from collections import deque
+from abc import ABC, abstractmethod
+
+
+class Gpus(ABC):
+    def __init__(self, system, num_gpus, step_time_in_gpu):
+        self.system = system
+        self.num_gpus = num_gpus
+        self.step_time_in_gpu = step_time_in_gpu
+    
+    @abstractmethod
+    def enter_to_gpus(self, conv):
+        """Virtual function to be implemented by subclasses"""
+        pass
+
+    @abstractmethod
+    def back_from_gpu(self, conv, gpu):
+        """Virtual function to be implemented by subclasses"""
+        pass
+
+
+
+class ConversationManager:
+    def __init__(self, system, sleep_time_between_steps, first_conv_id, steps, context_window_size):
+        self.sleep_time_between_steps = sleep_time_between_steps
+        self.system = system
+        self.inflights = 0
+        self.finished_conversations = 0
+        self.conv_id = first_conv_id
+        self.steps = steps
+        self.context_window_size = context_window_size
+    
+    def send_conversation_to_sleep(self, conv):
+        if conv.is_finished():
+            self.inflights -= 1
+            self.finished_conversations += 1
+        else:
+            self.system.push_event(self.system.T + random.random() * 2 * self.sleep_time_between_steps, {'type': 'back_from_between_steps_sleep', 'conv': conv}) 
+
+    def get_unique_id(self):
+        self.conv_id += 1
+        return self.conv_id
+    
+    def create_conversation(self):
+        conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
+        self.inflights += 1
+        self.send_conversation_to_sleep(conv)
+    
+
+    def back_from_sleep(self,conv):
+        conv.phase_in_step = 0
+        conv.disable_all = False
+        conv.produced_new_block_in_this_step = False
+
+
+class SimpleGpus(Gpus):
+    """Concrete implementation of Gpus abstract class"""
+    
+    def __init__(self, system, num_gpus, step_time_in_gpu):
+        super().__init__(system, num_gpus, step_time_in_gpu)
+        self.free_gpus = num_gpus
+        self.gpu_queue = deque()
+    
+    def enter_to_gpus(self, conv):
+        if self.free_gpus > 0:
+            self.free_gpus -= 1
+            self.system.push_event(
+                self.system.T + random.random() * 2 * self.step_time_in_gpu,
+                {'type': 'back_from_gpu', 'conv': conv, 'gpu' : None}
+            )
+        else:
+            self.gpu_queue.append(conv)
+    
+    def back_from_gpu(self, conv, gpu):
+        self.free_gpus += 1
+        while len(self.gpu_queue) > 0 and self.free_gpus > 0:
+            waiting_conv = self.gpu_queue.popleft()
+            self.enter_to_gpus(waiting_conv)
 
 
 class Block:
@@ -21,7 +98,7 @@ class Block:
 
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length, disk_size_in_blocks, context_window_len):
+    def __init__(self, conv_id, conversation_length, context_window_len):
         self.conv_id = conv_id
         self.conversation_length = conversation_length 
         self.finished_steps = 0
@@ -30,6 +107,8 @@ class Conversation:
 
     def is_finished(self):
         return (self.finished_steps >= self.conversation_length)
+
+
     
 
 class Disk:
@@ -52,7 +131,6 @@ class System:
         
         
         self.disk_size_in_blocks = disk_size_in_blocks
-        self.steps = steps
         self.allow_holes_recalculation = allow_holes_recalculation
         self.num_inflight_agents = num_inflight_agents
         self.iterations = iterations
@@ -60,28 +138,22 @@ class System:
         self.ranges = ranges
         self.evict_on_miss = evict_on_miss
         self.range_len = self.disk_size_in_blocks // self.ranges
-        self.time_between_steps = time_between_steps
-        self.total_gpus = total_gpus
-        self.step_time_in_gpu = step_time_in_gpu
-        self.context_window_size = context_window_size
         self.force_hit_ratio = force_hit_ratio
         
 
-        self.prev_conv_id = first_conv_id
         self.events = []  # Min heap for events
         self.disk = disk
-        self.finished_conversations = 0
-        self.inflights = 0
         self.T = 0
         self.misses = 0
         self.hits = 0
-        self.conversations_queue = deque()
-        self.free_gpus = self.total_gpus
         self.event_counter = 0  # Tie-breaker for heap events
+
+        self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
+        self.gpus = SimpleGpus(self, total_gpus, step_time_in_gpu)
         
-        total_time_spent_between_steps = (self.steps + 1) * time_between_steps
-        total_time_in_gpu = self.steps * self.step_time_in_gpu
-        gpu_requests_per_second = self.total_gpus * (1 / total_time_in_gpu) 
+        total_time_spent_between_steps = (steps + 1) * time_between_steps
+        total_time_in_gpu = steps * step_time_in_gpu
+        gpu_requests_per_second = total_gpus * (1 / total_time_in_gpu) 
         total_agent_time = total_time_in_gpu + total_time_spent_between_steps
         minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
 
@@ -95,13 +167,13 @@ class System:
         print(f"random_placement_on_miss: {self.random_placement_on_miss}")
         print(f"ranges: {self.ranges}")
         print(f"evict_on_miss: {self.evict_on_miss}")
-        print(f"context_window_size: {self.context_window_size}")
-        print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * self.steps)}")
+        print(f"context_window_size: {context_window_size}")
+        print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * steps)}")
         print("BW PERF ANALISS")        
-        print(f"total_gpus: {self.total_gpus}")
-        print(f"step_time_in_gpu: {self.step_time_in_gpu}")
-        print(f"steps: {self.steps}")
-        print(f"time_between_steps: {self.time_between_steps}") 
+        print(f"total_gpus: {total_gpus}")
+        print(f"step_time_in_gpu: {step_time_in_gpu}")
+        print(f"steps: {steps}")
+        print(f"time_between_steps: {time_between_steps}") 
         print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
         print("BW THEORETICAL NUMBERS")        
         print(f"\033[1;34mmaximal possible gpu requests per second: {gpu_requests_per_second:.8f}\033[0m")
@@ -120,18 +192,7 @@ class System:
         return self.disk.disk[block_offset] 
 
 
-    def handle_conversation_return_from_sleep_event(self, conv):
-        conv.phase_in_step = 0
-        conv.disable_all = False
-        conv.produced_new_block_in_this_step = False
-        self.free_gpus -= 1 
-        self.handle_conversation_return_from_gpu_event(conv)
-
-    def handle_conversation_return_from_gpu_event(self, conv):
-        self.free_gpus += 1
-        if len(self.conversations_queue) > 0 and self.free_gpus > 0:
-            waiting_conv = self.conversations_queue.popleft()
-            self.enter_conv_to_gpu(waiting_conv)       
+    def process_conversation(self, conv):     
         while conv.phase_in_step < len(conv.kvs):
             kv, indx_in_conversation = conv.kvs.popleft()
             valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
@@ -147,7 +208,7 @@ class System:
             conv.phase_in_step += 1
             to_recalculate = (random.random() > self.force_hit_ratio) if self.force_hit_ratio > 0 else (not valid_kv)
             if to_recalculate:
-                self.enter_conv_to_gpu(conv)
+                self.gpus.enter_to_gpus(conv)
                 return
         if not conv.produced_new_block_in_this_step:
             conv.produced_new_block_in_this_step = True
@@ -156,56 +217,43 @@ class System:
             conv.kvs.append((kv, conv.finished_steps))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
-            self.enter_conv_to_gpu(conv)
+            self.gpus.enter_to_gpus(conv)
             return
         conv.finished_steps += 1
-        self.enter_conv_to_sleep(conv)
+        self.conversation_manager.send_conversation_to_sleep(conv)
             
         
     def handle_statistic_event(self):
         self.push_event(self.T + 0.1, {'type': 'stat'})
 
-    def get_unique_id(self):
-        self.prev_conv_id += 1
-        return self.prev_conv_id
     
     def push_event(self, time, event_dict):
         """Helper function to push events to heap with tie-breaker counter."""
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
     
-    def enter_conv_to_gpu(self, conv):
-        if self.free_gpus > 0:
-            self.free_gpus -= 1
-            self.push_event(self.T + random.random() * 2 * self.step_time_in_gpu, {'type': 'gpu_finished', 'conv': conv})
-        else:
-            self.conversations_queue.append(conv)
-    
-    def enter_conv_to_sleep(self, conv):
-        if not conv.is_finished():
-            self.push_event(self.T + random.random() * 2 * self.time_between_steps, {'type': 'conv', 'conv': conv})
-        else:
-            self.finished_conversations += 1
-            self.inflights -= 1
-
 
     def simulate(self):
         self.push_event(self.T + 0.1, {'type': 'stat'})
-        while self.finished_conversations < self.iterations:
+        while self.conversation_manager.finished_conversations < self.iterations:
             t, counter, args = heapq.heappop(self.events)
             self.T = t
             if args['type'] == "stat":
                 self.handle_statistic_event()
-            elif args['type'] == 'conv':
+            elif args['type'] == 'back_from_between_steps_sleep':
                 conv = args['conv']
-                self.handle_conversation_return_from_sleep_event(conv)
-            else: #gpu finished
-                conv = args['conv'] 
-                self.handle_conversation_return_from_gpu_event(conv)
-            while self.inflights < self.num_inflight_agents:
-                conv = Conversation(self.get_unique_id(), self.steps, self.disk_size_in_blocks, self.context_window_size)
-                self.inflights += 1
-                self.enter_conv_to_sleep(conv)
+                self.conversation_manager.back_from_sleep(conv)
+                self.process_conversation(conv)
+            elif args['type'] == "back_from_gpu": #gpu finished
+                conv, gpu = args['conv'], args['gpu'] 
+                self.gpus.back_from_gpu(conv, gpu)
+                self.process_conversation(conv)
+            else:
+                print(f"Error: Unknown event type '{args['type']}'")
+                exit(1)
+            while self.conversation_manager.inflights < self.num_inflight_agents:
+                self.conversation_manager.create_conversation()
+
                 
         
         # Print cache statistics
