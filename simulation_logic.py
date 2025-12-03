@@ -39,7 +39,7 @@ class ConversationManager:
             self.inflights -= 1
             self.finished_conversations += 1
         else:
-            self.system.push_event(self.system.T + random.random() * 2 * self.sleep_time_between_steps, {'type': 'back_from_between_steps_sleep', 'conv': conv}) 
+            self.system.push_event(self.system.T + random.expovariate(1.0 / self.sleep_time_between_steps), {'type': 'back_from_between_steps_sleep', 'conv': conv}) 
 
     def get_unique_id(self):
         self.conv_id += 1
@@ -69,7 +69,7 @@ class SharedGpus(Gpus):
         if self.free_gpus > 0:
             self.free_gpus -= 1
             self.system.push_event(
-                self.system.T + random.random() * 2 * self.step_time_in_gpu * blocks_to_calculate,
+                self.system.T + random.expovariate(1.0 / (self.step_time_in_gpu * blocks_to_calculate)),
                 {'type': 'back_from_gpu', 'conv': conv, 'gpu' : self}
             )
         else:

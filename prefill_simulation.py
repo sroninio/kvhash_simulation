@@ -72,7 +72,7 @@ if __name__ == "__main__":
         "--iterations",
         type=int,
         default=1500,
-        help="Number of iterations (default: 1500)"
+        help="Number of iterations (default: 1500) Total number of conversations to simulate"
     )
     
     parser.add_argument(
@@ -94,7 +94,7 @@ if __name__ == "__main__":
         type=int,
         nargs='+',
         default=[1000, 2000, 4000, 8000, 16000, 32000, 64000],
-        help="List of agent values to test (default: 1000 2000 4000 8000 16000 32000 64000)"
+        help="List of inflight conversations to test (default: 1000 2000 4000 8000 16000 32000 64000)"
     )
     
     parser.add_argument(
@@ -145,7 +145,7 @@ if __name__ == "__main__":
         "--context_window_size",
         type=int,
         default=0,
-        help="Context window size (default: 0)"
+        help="Context window size in kv blocks (default: 0)"
     )
     
     parser.add_argument(
