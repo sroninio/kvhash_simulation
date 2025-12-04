@@ -165,6 +165,11 @@ class System:
         self.evict_on_miss = evict_on_miss
         self.range_len = self.disk_size_in_blocks // self.ranges
         self.force_hit_ratio = force_hit_ratio
+
+        self.gpu_requests_per_second = gpu_requests_per_second 
+        self.minimal_agent_max_bw = minimal_agent_max_bw
+
+
         
 
         self.events = []  # Min heap for events
@@ -226,7 +231,7 @@ class System:
             if blocks_to_recalculate > 0: 
                 self.gpus.enter_to_gpus(conv, blocks_to_recalculate)
                 return
-        while conv.phase_in_step < len(conv.kvs):
+        while conv.phase_in_step < len(conv.kvs) and not conv.produced_new_block_in_this_step:
             kv, indx_in_conversation = conv.kvs.popleft()
             valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
             conv.disable_all = conv.disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
@@ -297,6 +302,6 @@ class System:
         print("BW RESULTS")        
         print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
-        return hit_rate, self.T, self.iterations
+        return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
         
 

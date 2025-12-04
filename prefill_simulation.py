@@ -2,9 +2,10 @@
 
 import argparse
 import pandas as pd
+from datetime import datetime
 from simulation_logic import System, Disk
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, output_file):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -30,7 +31,7 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     is_shared_storage=is_shared_storage,
                     is_use_theoretical_agents=is_use_theoretical_agents
                 )
-                hit_rate, total_time, total_iterations = system.simulate()
+                hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
                 
                 # Collect results
@@ -39,14 +40,18 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     'steps': steps,
                     'ranges': ranges_val,
                     'disk_size_in_blocks': disk_size_in_blocks,
+                    'disk_usage' : 1 /(disk_size_in_blocks / (agents * steps)),
                     'hit_rate': hit_rate,
                     'total_time': total_time,
                     'total_iterations': total_iterations,
+                    'minimal_agent_max_rate' : minimal_agent_max_bw,
+                    'theoretical_rate_req_sec' : theoretical_rate,
+                    'actual_rate_req_sec' : actual_rate,
+                    'TTFT' : agents / actual_rate
                 })
     
     # Write results to Excel
     df = pd.DataFrame(results)
-    output_file = 'simulation_results.xlsx'
     df.to_excel(output_file, index=False)
     print(f"\nResults written to {output_file}")
                 
@@ -170,6 +175,13 @@ if __name__ == "__main__":
         help="Use theoretical agents count (1) or actual agents (0) (default: 0)"
     )
     
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default=f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        help="Output file path (default: simulation_results_<timestamp>.xlsx)"
+    )
+    
     args = parser.parse_args()
     
     main(
@@ -188,5 +200,6 @@ if __name__ == "__main__":
         context_window_size=args.context_window_size,
         force_hit_ratio=args.force_hit_ratio,
         is_shared_storage=args.is_shared_storage,
-        is_use_theoretical_agents=args.is_use_theoretical_agents
+        is_use_theoretical_agents=args.is_use_theoretical_agents,
+        output_file=args.output_file
     )
