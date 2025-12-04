@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 from simulation_logic import System, Disk
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -27,7 +27,8 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     step_time_in_gpu=step_time_in_gpu,
                     context_window_size=context_window_size if context_window_size > 0 else steps,
                     force_hit_ratio=force_hit_ratio,
-                    is_shared_storage=is_shared_storage
+                    is_shared_storage=is_shared_storage,
+                    is_use_theoretical_agents=is_use_theoretical_agents
                 )
                 hit_rate, total_time, total_iterations = system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
@@ -162,6 +163,13 @@ if __name__ == "__main__":
         help="Use shared GPU storage (1) or non-shared (0) (default: 1)"
     )
     
+    parser.add_argument(
+        "--is_use_theoretical_agents",
+        type=int,
+        default=0,
+        help="Use theoretical agents count (1) or actual agents (0) (default: 0)"
+    )
+    
     args = parser.parse_args()
     
     main(
@@ -179,5 +187,6 @@ if __name__ == "__main__":
         step_time_in_gpu=args.step_time_in_gpu,
         context_window_size=args.context_window_size,
         force_hit_ratio=args.force_hit_ratio,
-        is_shared_storage=args.is_shared_storage
+        is_shared_storage=args.is_shared_storage,
+        is_use_theoretical_agents=args.is_use_theoretical_agents
     )

@@ -3,7 +3,7 @@
 import heapq
 import random
 import math
-from collections import deque
+from collections import deque, defaultdict
 from abc import ABC, abstractmethod
 
 
@@ -88,9 +88,10 @@ class NonSharedGpus(Gpus):
     def __init__(self, system, num_gpus, step_time_in_gpu):
         super().__init__(system, step_time_in_gpu)
         self.gpus = [SharedGpus(system, 1, step_time_in_gpu) for _ in range(num_gpus)]
+        self.conv_to_gpu = defaultdict(lambda: random.choice(self.gpus))
 
     def enter_to_gpus(self, conv, blocks_to_calculate):
-        gpu = random.choice(self.gpus)
+        gpu = self.conv_to_gpu[conv.conv_id]
         gpu.enter_to_gpus(conv, blocks_to_calculate)
     
     def back_from_gpu(self, conv, gpu):
@@ -132,9 +133,19 @@ class Disk:
 
 
 class System:
+    @staticmethod
+    def calculate_theoretical_bw(steps, time_between_steps, step_time_in_gpu, total_gpus):
+        """Calculate theoretical bandwidth metrics"""
+        total_time_spent_between_steps = (steps + 1) * time_between_steps
+        total_time_in_gpu = steps * step_time_in_gpu
+        gpu_requests_per_second = total_gpus * (1 / total_time_in_gpu) 
+        total_agent_time = total_time_in_gpu + total_time_spent_between_steps
+        minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
+        return gpu_requests_per_second, minimal_agent_max_bw
+    
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage):
+        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -143,11 +154,11 @@ class System:
             print(f"Error: force_hit_ratio ({force_hit_ratio}) must be between 0.0 and 1.0")
             exit(1)
 
-        
+        gpu_requests_per_second, minimal_agent_max_bw = self.calculate_theoretical_bw(steps, time_between_steps, step_time_in_gpu, total_gpus) 
         
         self.disk_size_in_blocks = disk_size_in_blocks
         self.allow_holes_recalculation = allow_holes_recalculation
-        self.num_inflight_agents = num_inflight_agents
+        self.num_inflight_agents = num_inflight_agents if not is_use_theoretical_agents else int(minimal_agent_max_bw)
         self.iterations = iterations
         self.random_placement_on_miss = random_placement_on_miss
         self.ranges = ranges
@@ -169,11 +180,6 @@ class System:
         else:
             self.gpus = NonSharedGpus(self, total_gpus, step_time_in_gpu)
         
-        total_time_spent_between_steps = (steps + 1) * time_between_steps
-        total_time_in_gpu = steps * step_time_in_gpu
-        gpu_requests_per_second = total_gpus * (1 / total_time_in_gpu) 
-        total_agent_time = total_time_in_gpu + total_time_spent_between_steps
-        minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
 
         
         print("\033[1;33m\n=============================\033[0m")
@@ -190,6 +196,7 @@ class System:
         print("BW PERF ANALISS")        
         print(f"total_gpus: {total_gpus}")
         print(f"is_shared_storage: {is_shared_storage}")
+        print(f"is_use_theoretical_agents: {is_use_theoretical_agents}")
         print(f"step_time_in_gpu: {step_time_in_gpu}")
         print(f"steps: {steps}")
         print(f"time_between_steps: {time_between_steps}") 
@@ -291,4 +298,5 @@ class System:
         print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
         return hit_rate, self.T, self.iterations
+        
 
