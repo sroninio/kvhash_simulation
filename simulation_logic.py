@@ -5,7 +5,39 @@ import random
 import math
 from collections import deque, defaultdict
 from abc import ABC, abstractmethod
+from enum import Enum
+from functools import partial
+import asyncio
 
+
+class IOType(Enum):
+    READ = 0
+    WRITE = 1
+
+
+class async_server(ABC):
+    def __init__(self, system, num_servers, serve_time):
+        self.system = system
+        self.num_servers = num_servers
+        self.serve_time = serve_time
+        self.inflights = 0
+        self.num_completed = 0
+    
+    @abstractmethod
+    async def _enter(self, uid):
+        pass
+    
+    async def enter(self, uid):
+        self.inflights += 1
+        future = asyncio.Future()
+        await self._enter(uid)
+        self.inflights -= 1
+        self.num_completed += 1
+
+
+    
+
+    
 
 class Gpus(ABC):
     def __init__(self, system, step_time_in_gpu):
@@ -22,6 +54,23 @@ class Gpus(ABC):
         """Virtual function to be implemented by subclasses"""
         pass
 
+class Storage:
+    def __init__(self, system, io_time):
+        self.system = system
+        self.io_time = io_time
+        self.total_read = 0
+        self.total_write = 0
+    
+    def go_to_storage(self, conv, io_type):
+        if io_type == IOType.WRITE:
+            self.total_write += 1
+        else:
+            self.total_read += 1
+        self.system.push_event(
+            self.system.T + random.expovariate(1.0 / self.io_time),
+            {'type': 'back_from_storage', 'conv': conv}
+        )
+
 
 
 class ConversationManager:
@@ -33,13 +82,6 @@ class ConversationManager:
         self.conv_id = first_conv_id
         self.steps = steps
         self.context_window_size = context_window_size
-    
-    def send_conversation_to_sleep(self, conv):
-        if conv.is_finished():
-            self.inflights -= 1
-            self.finished_conversations += 1
-        else:
-            self.system.push_event(self.system.T + random.expovariate(1.0 / self.sleep_time_between_steps), {'type': 'back_from_between_steps_sleep', 'conv': conv}) 
 
     def get_unique_id(self):
         self.conv_id += 1
@@ -47,14 +89,34 @@ class ConversationManager:
     
     def create_conversation(self):
         conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
-        self.inflights += 1
-        self.send_conversation_to_sleep(conv)
     
 
-    def back_from_sleep(self,conv):
-        conv.phase_in_step = 0
-        conv.disable_all = False
-        conv.produced_new_block_in_this_step = False
+
+
+
+class MMC(async_server):
+    def __init__(self, system, num_servers, serve_time):
+        super().__init__(system, num_servers, serve_time)
+        self.free_servers = asyncio.Semaphore(num_servers)
+    
+    async def _enter(self, uid):
+        await self.free_servers.acquire()
+        event_future = asyncio.Future()
+        self.system.push_event(self.system.T + random.expovariate(1.0 / self.serve_time), event_future)
+        await event_future
+        self.free_servers.release()  # Free the server
+
+
+    
+class C_MM1(async_server):    
+    def __init__(self, system, num_servers, serve_time):
+        super().__init__(system, num_servers, serve_time)
+        self.servers = [MMC(self.system, 1, self.serve_time) for _ in range(self.num_servers)]
+        self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
+    
+    async def _enter(self, uid, future):
+        server = self.uid_to_server[uid]
+        await server._enter(uid, future)
 
 
 class SharedGpus(Gpus):
@@ -179,12 +241,12 @@ class System:
         self.hits = 0
         self.event_counter = 0  # Tie-breaker for heap events
 
+        self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
+        self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
+
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
-        if is_shared_storage:
-            self.gpus = SharedGpus(self, total_gpus, step_time_in_gpu)
-        else:
-            self.gpus = NonSharedGpus(self, total_gpus, step_time_in_gpu)
-        
+
+
 
         
         print("\033[1;33m\n=============================\033[0m")
@@ -211,6 +273,9 @@ class System:
         print(f"\033[1;31mminimal_agent_max_bw: {minimal_agent_max_bw:.2f}\033[0m")
         
 
+    def statistics(self, params):
+        self.statistic_mgr.enter(17, self.statistics, {})
+
 
     def alloc_block(self, block):
         prev_range_idx = block.offset // self.range_len if block else -1
@@ -221,6 +286,9 @@ class System:
         offset_in_range = random.randrange(self.range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % self.range_len)
         block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
+
+    async def async_handle_conversation(self, conv):
+        pass
 
 
     def process_conversation(self, conv):     
@@ -260,9 +328,6 @@ class System:
         self.conversation_manager.send_conversation_to_sleep(conv)
             
         
-    def handle_statistic_event(self):
-        self.push_event(self.T + 0.1, {'type': 'stat'})
-
     
     def push_event(self, time, event_dict):
         """Helper function to push events to heap with tie-breaker counter."""
@@ -271,28 +336,15 @@ class System:
     
 
     def simulate(self):
-        self.push_event(self.T + 0.1, {'type': 'stat'})
-        while self.conversation_manager.finished_conversations < self.iterations:
-            t, counter, args = heapq.heappop(self.events)
+        while self.completed_conversations < self.iterations:
+            while self.inflgiht_conversation < self.num_inflight_agents:
+                conv = self.conversation_manager.create_conversation()
+                self.inflgiht_conversation += 1
+                asyncio.create_task(self.async_handle_conversation(conv))                
+            t, counter, future = heapq.heappop(self.events)
             self.T = t
-            if args['type'] == "stat":
-                self.handle_statistic_event()
-            elif args['type'] == 'back_from_between_steps_sleep':
-                conv = args['conv']
-                self.conversation_manager.back_from_sleep(conv)
-                self.process_conversation(conv)
-            elif args['type'] == "back_from_gpu": #gpu finished
-                conv, gpu = args['conv'], args['gpu'] 
-                self.gpus.back_from_gpu(conv, gpu)
-                self.process_conversation(conv)
-            else:
-                print(f"Error: Unknown event type '{args['type']}'")
-                exit(1)
-            while self.conversation_manager.inflights < self.num_inflight_agents:
-                self.conversation_manager.create_conversation()
-
-                
-        
+            future.set_result(None)  # Notify the future
+      
         # Print cache statistics
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
