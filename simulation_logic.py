@@ -14,6 +14,48 @@ class IOType(Enum):
     READ = 0
     WRITE = 1
 
+class Block:
+    def __init__(self, offset):
+        self.owner_conv_id = -1
+        self.owner_pos_in_conv = -1
+        self.offset = offset
+    
+    def is_belongs_to(self, conv_id, pos_in_conv):
+        return (self.owner_conv_id == conv_id) and (self.owner_pos_in_conv == pos_in_conv)
+    
+    def take_ownership(self, conv_id, pos_in_conv):
+        self.owner_conv_id = conv_id
+        self.owner_pos_in_conv = pos_in_conv
+            
+class Disk:
+    def __init__(self, size):
+        self.disk = [Block(indx) for indx in range(size)] 
+
+class Conversation:
+    def __init__(self, conv_id, conversation_length, context_window_len):
+        self.conv_id = conv_id
+        self.conversation_length = conversation_length 
+        self.finished_steps = 0
+        self.context_window_len = context_window_len
+        self.kvs = deque()
+
+
+class ConversationManager:
+    def __init__(self, system, sleep_time_between_steps, first_conv_id, steps, context_window_size):
+        self.sleep_time_between_steps = sleep_time_between_steps
+        self.system = system
+        self.inflights = 0
+        self.finished_conversations = 0
+        self.conv_id = first_conv_id
+        self.steps = steps
+        self.context_window_size = context_window_size
+
+    def get_unique_id(self):
+        self.conv_id += 1
+        return self.conv_id
+    
+    def create_conversation(self):
+        conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
 
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
@@ -34,66 +76,6 @@ class async_server(ABC):
         self.inflights -= 1
         self.num_completed += 1
 
-
-    
-
-    
-
-class Gpus(ABC):
-    def __init__(self, system, step_time_in_gpu):
-        self.system = system
-        self.step_time_in_gpu = step_time_in_gpu
-    
-    @abstractmethod
-    def enter_to_gpus(self, conv, blocks_to_calculate):
-        """Virtual function to be implemented by subclasses"""
-        pass
-
-    @abstractmethod
-    def back_from_gpu(self, conv, gpu):
-        """Virtual function to be implemented by subclasses"""
-        pass
-
-class Storage:
-    def __init__(self, system, io_time):
-        self.system = system
-        self.io_time = io_time
-        self.total_read = 0
-        self.total_write = 0
-    
-    def go_to_storage(self, conv, io_type):
-        if io_type == IOType.WRITE:
-            self.total_write += 1
-        else:
-            self.total_read += 1
-        self.system.push_event(
-            self.system.T + random.expovariate(1.0 / self.io_time),
-            {'type': 'back_from_storage', 'conv': conv}
-        )
-
-
-
-class ConversationManager:
-    def __init__(self, system, sleep_time_between_steps, first_conv_id, steps, context_window_size):
-        self.sleep_time_between_steps = sleep_time_between_steps
-        self.system = system
-        self.inflights = 0
-        self.finished_conversations = 0
-        self.conv_id = first_conv_id
-        self.steps = steps
-        self.context_window_size = context_window_size
-
-    def get_unique_id(self):
-        self.conv_id += 1
-        return self.conv_id
-    
-    def create_conversation(self):
-        conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
-    
-
-
-
-
 class MMC(async_server):
     def __init__(self, system, num_servers, serve_time):
         super().__init__(system, num_servers, serve_time)
@@ -106,8 +88,6 @@ class MMC(async_server):
         await event_future
         self.free_servers.release()  # Free the server
 
-
-    
 class C_MM1(async_server):    
     def __init__(self, system, num_servers, serve_time):
         super().__init__(system, num_servers, serve_time)
@@ -117,82 +97,6 @@ class C_MM1(async_server):
     async def _enter(self, uid, future):
         server = self.uid_to_server[uid]
         await server._enter(uid, future)
-
-
-class SharedGpus(Gpus):
-    """Concrete implementation of Gpus abstract class"""
-    
-    def __init__(self, system, num_gpus, step_time_in_gpu):
-        super().__init__(system, step_time_in_gpu)
-        self.free_gpus = num_gpus
-        self.gpu_queue = deque()
-    
-    def enter_to_gpus(self, conv, blocks_to_calculate):
-        if self.free_gpus > 0:
-            self.free_gpus -= 1
-            self.system.push_event(
-                self.system.T + random.expovariate(1.0 / (self.step_time_in_gpu * blocks_to_calculate)),
-                {'type': 'back_from_gpu', 'conv': conv, 'gpu' : self}
-            )
-        else:
-            self.gpu_queue.append((conv, blocks_to_calculate))
-    
-    def back_from_gpu(self, conv, gpu):
-        self.free_gpus += 1
-        while len(self.gpu_queue) > 0 and self.free_gpus > 0:
-            waiting_conv, blocks_to_calculate = self.gpu_queue.popleft()
-            self.enter_to_gpus(waiting_conv, blocks_to_calculate)
-
-
-class NonSharedGpus(Gpus):
-    """Concrete implementation of Gpus with dedicated GPU per conversation"""
-    
-    def __init__(self, system, num_gpus, step_time_in_gpu):
-        super().__init__(system, step_time_in_gpu)
-        self.gpus = [SharedGpus(system, 1, step_time_in_gpu) for _ in range(num_gpus)]
-        self.conv_to_gpu = defaultdict(lambda: random.choice(self.gpus))
-
-    def enter_to_gpus(self, conv, blocks_to_calculate):
-        gpu = self.conv_to_gpu[conv.conv_id]
-        gpu.enter_to_gpus(conv, blocks_to_calculate)
-    
-    def back_from_gpu(self, conv, gpu):
-        gpu.back_from_gpu(conv, gpu)
-
-
-class Block:
-    def __init__(self, offset):
-        self.owner_conv_id = -1
-        self.owner_pos_in_conv = -1
-        self.offset = offset
-    
-    def is_belongs_to(self, conv_id, pos_in_conv):
-        return (self.owner_conv_id == conv_id) and (self.owner_pos_in_conv == pos_in_conv)
-    
-    def take_ownership(self, conv_id, pos_in_conv):
-        self.owner_conv_id = conv_id
-        self.owner_pos_in_conv = pos_in_conv
-            
-
-
-class Conversation:
-    def __init__(self, conv_id, conversation_length, context_window_len):
-        self.conv_id = conv_id
-        self.conversation_length = conversation_length 
-        self.finished_steps = 0
-        self.context_window_len = context_window_len
-        self.kvs = deque()
-
-    def is_finished(self):
-        return (self.finished_steps >= self.conversation_length)
-
-
-    
-
-class Disk:
-    def __init__(self, size):
-        self.disk = [Block(indx) for indx in range(size)] 
-
 
 class System:
     @staticmethod
@@ -232,8 +136,6 @@ class System:
         self.minimal_agent_max_bw = minimal_agent_max_bw
 
 
-        
-
         self.events = []  # Min heap for events
         self.disk = disk
         self.T = 0
@@ -245,6 +147,7 @@ class System:
         self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
+        self.inflgiht_conversations = {}
 
 
 
@@ -273,9 +176,6 @@ class System:
         print(f"\033[1;31mminimal_agent_max_bw: {minimal_agent_max_bw:.2f}\033[0m")
         
 
-    def statistics(self, params):
-        self.statistic_mgr.enter(17, self.statistics, {})
-
 
     def alloc_block(self, block):
         prev_range_idx = block.offset // self.range_len if block else -1
@@ -288,45 +188,30 @@ class System:
         return self.disk.disk[block_offset] 
 
     async def async_handle_conversation(self, conv):
-        pass
-
-
-    def process_conversation(self, conv):     
-        if self.force_hit_ratio and conv.phase_in_step == 0: 
-            conv.phase_in_step = len(conv.kvs)
-            p_miss = 1 - self.force_hit_ratio
-            blocks_to_recalculate = math.ceil(p_miss * len(conv.kvs))
-            if blocks_to_recalculate > 0: 
-                self.gpus.enter_to_gpus(conv, blocks_to_recalculate)
-                return
-        while conv.phase_in_step < len(conv.kvs) and not conv.produced_new_block_in_this_step:
-            kv, indx_in_conversation = conv.kvs.popleft()
-            valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) 
-            conv.disable_all = conv.disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
-            if (not conv.disable_all) and valid_kv:
-                self.hits += 1
-            else:
-                self.misses += 1
-            if not valid_kv and self.evict_on_miss:
-                kv = self.alloc_block(kv)
-                kv.take_ownership(conv.conv_id, indx_in_conversation)
-            conv.kvs.append((kv, indx_in_conversation)) 
-            conv.phase_in_step += 1
-            if not valid_kv:
-                self.gpus.enter_to_gpus(conv, 1)
-                return
-        if not conv.produced_new_block_in_this_step:
-            conv.produced_new_block_in_this_step = True
+        for _ in range(len(conv.conversation_length)):
+            disable_all = False
+            for _ in range(len(conv.kvs)):
+                kv, indx_in_conversation = conv.kvs.popleft()
+                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not self.force_hit_ratio else (random.random() < self.force_hit_ratio)
+                disable_all = disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
+                if (not disable_all) and (valid_kv):
+                    self.hits += 1
+                else:
+                    self.misses += 1
+                if not valid_kv and self.evict_on_miss:
+                    kv = self.alloc_block(kv)
+                    kv.take_ownership(conv.conv_id, indx_in_conversation)
+                conv.kvs.append((kv, indx_in_conversation)) 
+                if not valid_kv:
+                    await self.gpus.enter(conv.conv_id)
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, conv.finished_steps)
             conv.kvs.append((kv, conv.finished_steps))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
-            self.gpus.enter_to_gpus(conv, 1)
-            return
-        conv.finished_steps += 1
-        self.conversation_manager.send_conversation_to_sleep(conv)
-            
+            await self.gpus.enter(conv.conv_id)    
+            await self.agent_outside_service.enter(conv.conv_id) 
+        del self.inflgiht_conversations[conv.conv_id]
         
     
     def push_event(self, time, event_dict):
@@ -337,9 +222,9 @@ class System:
 
     def simulate(self):
         while self.completed_conversations < self.iterations:
-            while self.inflgiht_conversation < self.num_inflight_agents:
+            while len(self.inflgiht_conversations) < self.num_inflight_agents:
                 conv = self.conversation_manager.create_conversation()
-                self.inflgiht_conversation += 1
+                self.inflgiht_conversations[conv.conv_id] = conv
                 asyncio.create_task(self.async_handle_conversation(conv))                
             t, counter, future = heapq.heappop(self.events)
             self.T = t
@@ -354,6 +239,7 @@ class System:
         print("BW RESULTS")        
         print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
+        asyncio.wait_all()
         return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
         
 
