@@ -168,7 +168,7 @@ class System:
         return self.disk.disk[block_offset] 
 
     async def async_handle_conversation(self, conv):
-        for _ in range(conv.conversation_length):
+        for step in range(conv.conversation_length):
             disable_all = False
             for _ in range(len(conv.kvs)):
                 kv, indx_in_conversation = conv.kvs.popleft()
@@ -185,8 +185,8 @@ class System:
                 if not valid_kv:
                     await self.gpus.enter(conv.conv_id)
             kv = self.alloc_block(None)
-            kv.take_ownership(conv.conv_id, conv.finished_steps)
-            conv.kvs.append((kv, conv.finished_steps))
+            kv.take_ownership(conv.conv_id, step)
+            conv.kvs.append((kv, step))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
             await self.gpus.enter(conv.conv_id)    
