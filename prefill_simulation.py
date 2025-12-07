@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import asyncio
 import pandas as pd
 from datetime import datetime
 from simulation_logic import System, Disk
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, output_file):
+async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, output_file):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -31,7 +32,7 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                     is_shared_storage=is_shared_storage,
                     is_use_theoretical_agents=is_use_theoretical_agents
                 )
-                hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = system.simulate()
+                hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
                 
                 # Collect results
@@ -184,7 +185,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    main(
+    asyncio.run(main(
         disk_size_in_blocks=args.disk_size_in_blocks,
         allow_holes_recalculation=args.allow_holes_recalculation,
         random_placement_on_miss=args.random_placement_on_miss,
@@ -202,4 +203,4 @@ if __name__ == "__main__":
         is_shared_storage=args.is_shared_storage,
         is_use_theoretical_agents=args.is_use_theoretical_agents,
         output_file=args.output_file
-    )
+    ))

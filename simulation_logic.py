@@ -56,6 +56,7 @@ class ConversationManager:
     
     def create_conversation(self):
         conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
+        return conv
 
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
@@ -71,7 +72,6 @@ class async_server(ABC):
     
     async def enter(self, uid):
         self.inflights += 1
-        future = asyncio.Future()
         await self._enter(uid)
         self.inflights -= 1
         self.num_completed += 1
@@ -94,9 +94,9 @@ class C_MM1(async_server):
         self.servers = [MMC(self.system, 1, self.serve_time) for _ in range(self.num_servers)]
         self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
     
-    async def _enter(self, uid, future):
+    async def _enter(self, uid):
         server = self.uid_to_server[uid]
-        await server._enter(uid, future)
+        await server._enter(uid)
 
 class System:
     @staticmethod
@@ -108,6 +108,8 @@ class System:
         total_agent_time = total_time_in_gpu + total_time_spent_between_steps
         minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
         return gpu_requests_per_second, minimal_agent_max_bw
+    
+
     
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
@@ -147,33 +149,11 @@ class System:
         self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
-        self.inflgiht_conversations = {}
+        self.completed_conversations = 0
+        self.inflight_conversation_count = 0
 
-
-
-        
-        print("\033[1;33m\n=============================\033[0m")
-        print("CACHE PERF ANALISS")        
-        print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
-        print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
-        print(f"num_inflight_agents: {self.num_inflight_agents}")
-        print(f"iterations: {self.iterations}")
-        print(f"random_placement_on_miss: {self.random_placement_on_miss}")
-        print(f"ranges: {self.ranges}")
-        print(f"evict_on_miss: {self.evict_on_miss}")
-        print(f"context_window_size: {context_window_size}")
-        print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * steps)}")
-        print("BW PERF ANALISS")        
-        print(f"total_gpus: {total_gpus}")
-        print(f"is_shared_storage: {is_shared_storage}")
-        print(f"is_use_theoretical_agents: {is_use_theoretical_agents}")
-        print(f"step_time_in_gpu: {step_time_in_gpu}")
-        print(f"steps: {steps}")
-        print(f"time_between_steps: {time_between_steps}") 
-        print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
-        print("BW THEORETICAL NUMBERS")        
-        print(f"\033[1;34mmaximal possible gpu requests per second: {gpu_requests_per_second:.8f}\033[0m")
-        print(f"\033[1;31mminimal_agent_max_bw: {minimal_agent_max_bw:.2f}\033[0m")
+        self.print_input_params(context_window_size, steps, total_gpus, is_shared_storage, is_use_theoretical_agents,
+                            step_time_in_gpu, time_between_steps)
         
 
 
@@ -188,7 +168,7 @@ class System:
         return self.disk.disk[block_offset] 
 
     async def async_handle_conversation(self, conv):
-        for _ in range(len(conv.conversation_length)):
+        for _ in range(conv.conversation_length):
             disable_all = False
             for _ in range(len(conv.kvs)):
                 kv, indx_in_conversation = conv.kvs.popleft()
@@ -210,8 +190,7 @@ class System:
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
             await self.gpus.enter(conv.conv_id)    
-            await self.agent_outside_service.enter(conv.conv_id) 
-        del self.inflgiht_conversations[conv.conv_id]
+            await self.agent_outside_service.enter(conv.conv_id)
         
     
     def push_event(self, time, event_dict):
@@ -220,17 +199,62 @@ class System:
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
     
 
-    def simulate(self):
+    async def simulate(self):
+        def on_conversation_done(task):
+            self.inflight_conversation_count -= 1
+            self.completed_conversations += 1
+            if self.completed_conversations % 10000 == 0:
+                print(f"Done {self.completed_conversations}")
+        
         while self.completed_conversations < self.iterations:
-            while len(self.inflgiht_conversations) < self.num_inflight_agents:
+            while self.inflight_conversation_count < min(self.num_inflight_agents,  self.iterations - self.completed_conversations):
                 conv = self.conversation_manager.create_conversation()
-                self.inflgiht_conversations[conv.conv_id] = conv
-                asyncio.create_task(self.async_handle_conversation(conv))                
+                task = asyncio.create_task(self.async_handle_conversation(conv))
+                task.add_done_callback(on_conversation_done)
+                self.inflight_conversation_count += 1                 
+            if not self.events:
+                await asyncio.sleep(0)
+                continue   
             t, counter, future = heapq.heappop(self.events)
             self.T = t
             future.set_result(None)  # Notify the future
       
-        # Print cache statistics
+        pending = asyncio.all_tasks() - {asyncio.current_task()}
+        if pending:
+            await asyncio.gather(*pending)
+        
+        hit_rate = self.print_output_params()
+        
+        return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
+        
+    def print_input_params(self, context_window_size, steps, total_gpus, is_shared_storage, is_use_theoretical_agents, 
+                        step_time_in_gpu, time_between_steps):
+        """Print simulation parameters"""
+        print("\033[1;33m\n=============================\033[0m")
+        print("CACHE PERF ANALISS")        
+        print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
+        print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
+        print(f"num_inflight_agents: {self.num_inflight_agents}")
+        print(f"iterations: {self.iterations}")
+        print(f"random_placement_on_miss: {self.random_placement_on_miss}")
+        print(f"ranges: {self.ranges}")
+        print(f"evict_on_miss: {self.evict_on_miss}")
+        print(f"context_window_size: {context_window_size}")
+        print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * steps)}")
+        print("BW PERF ANALISS")        
+        print(f"total_gpus: {total_gpus}")
+        print(f"is_shared_storage: {is_shared_storage}")
+        print(f"is_use_theoretical_agents: {is_use_theoretical_agents}")
+        print(f"step_time_in_gpu: {step_time_in_gpu}")
+        print(f"steps: {steps}")
+        print(f"time_between_steps: {time_between_steps}") 
+        print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
+        print("BW THEORETICAL NUMBERS")        
+        print(f"\033[1;34mmaximal possible gpu requests per second: {self.gpu_requests_per_second:.8f}\033[0m")
+        print(f"\033[1;31mminimal_agent_max_bw: {self.minimal_agent_max_bw:.2f}\033[0m")
+    
+    def print_output_params(self):
+        """Print simulation output"""
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         print("CACHE RESULTS")        
@@ -239,7 +263,4 @@ class System:
         print("BW RESULTS")        
         print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
-        asyncio.wait_all()
-        return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
-        
-
+        return hit_rate
