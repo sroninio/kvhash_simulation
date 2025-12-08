@@ -44,8 +44,6 @@ class ConversationManager:
     def __init__(self, system, sleep_time_between_steps, first_conv_id, steps, context_window_size):
         self.sleep_time_between_steps = sleep_time_between_steps
         self.system = system
-        self.inflights = 0
-        self.finished_conversations = 0
         self.conv_id = first_conv_id
         self.steps = steps
         self.context_window_size = context_window_size
@@ -144,6 +142,7 @@ class System:
         self.misses = 0
         self.hits = 0
         self.event_counter = 0  # Tie-breaker for heap events
+        self.terminate = False
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
         self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
@@ -198,8 +197,31 @@ class System:
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
     
+    
+    async def monitor_gpus(self):
+        total_free_servers = 0
+        sample_count = 0
+        
+        while not self.terminate:
+            await asyncio.sleep(0.1)
+            if hasattr(self.gpus, 'free_servers'):
+                free = self.gpus.free_servers._value
+                total_free_servers += free
+                sample_count += 1
+                avg = total_free_servers / sample_count
+                print(f"T={self.T:.2f} - Free GPU servers: {free}, Avg: {avg:.2f}")
+            else:
+                # For NonSharedGpus, show each GPU's free servers
+                free_counts = [gpu.free_servers._value for gpu in self.gpus.gpus]
+                avg_free = sum(free_counts) / len(free_counts)
+                total_free_servers += avg_free
+                sample_count += 1
+                overall_avg = total_free_servers / sample_count
+                print(f"T={self.T:.2f} - Free GPU servers per instance: {free_counts}, Avg: {overall_avg:.2f}")
 
     async def simulate(self):
+        monitor_task = asyncio.create_task(self.monitor_gpus())
+        
         def on_conversation_done(task):
             self.inflight_conversation_count -= 1
             self.completed_conversations += 1
@@ -219,6 +241,8 @@ class System:
             self.T = t
             future.set_result(None)  # Notify the future
       
+        self.terminate = True
+        
         pending = asyncio.all_tasks() - {asyncio.current_task()}
         if pending:
             await asyncio.gather(*pending)

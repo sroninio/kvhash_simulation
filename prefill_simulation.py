@@ -124,7 +124,7 @@ if __name__ == "__main__":
         "--sim_ratio",
         type=int,
         default=1,
-        help="Simulation ratio divider (default: 10)"
+        help="Simulation ratio divider (default: 1)"
     )
     
     parser.add_argument(
