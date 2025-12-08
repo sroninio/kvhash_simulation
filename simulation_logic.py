@@ -65,12 +65,12 @@ class async_server(ABC):
         self.num_completed = 0
     
     @abstractmethod
-    async def _enter(self, uid):
+    async def _enter(self, uid, works):
         pass
     
-    async def enter(self, uid):
+    async def enter(self, uid, works = 1):
         self.inflights += 1
-        await self._enter(uid)
+        await self._enter(uid, works)
         self.inflights -= 1
         self.num_completed += 1
 
@@ -79,10 +79,10 @@ class MMC(async_server):
         super().__init__(system, num_servers, serve_time)
         self.free_servers = asyncio.Semaphore(num_servers)
     
-    async def _enter(self, uid):
+    async def _enter(self, uid, works):
         async with self.free_servers:
             event_future = asyncio.Future()
-            self.system.push_event(self.system.T + random.expovariate(1.0 / self.serve_time), event_future)
+            self.system.push_event(self.system.T + works * (random.expovariate(1.0 / self.serve_time)), event_future)
             await event_future
 
 class C_MM1(async_server):    
@@ -91,9 +91,9 @@ class C_MM1(async_server):
         self.servers = [MMC(self.system, 1, self.serve_time) for _ in range(self.num_servers)]
         self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
     
-    async def _enter(self, uid):
+    async def _enter(self, uid, works):
         server = self.uid_to_server[uid]
-        await server._enter(uid)
+        await server._enter(uid, works)
 
 class System:
     @staticmethod
@@ -172,7 +172,7 @@ class System:
 
     async def async_handle_conversation(self, conv):
         for step in range(conv.conversation_length):
-            disable_all = False
+            disable_all, to_read, to_calc = False, 0, 0
             for _ in range(len(conv.kvs)):
                 kv, indx_in_conversation = conv.kvs.popleft()
                 valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not self.force_hit_ratio else (random.random() < self.force_hit_ratio)
@@ -186,9 +186,13 @@ class System:
                     kv.take_ownership(conv.conv_id, indx_in_conversation)
                 conv.kvs.append((kv, indx_in_conversation)) 
                 if not valid_kv:
-                    await self.gpus.enter(conv.conv_id)
+                    to_calc += 1
                 elif self.storage:
-                    await self.storage.enter(conv.conv_id)
+                    to_read += 1       
+            if self.storage and to_read > 0:
+                await self.storage.enter(conv.conv_id, to_read)
+            if self.gpus and to_calc > 0:
+                await self.gpus.enter(conv.conv_id, to_calc)
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, step)
             conv.kvs.append((kv, step))
