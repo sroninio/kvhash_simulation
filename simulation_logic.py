@@ -80,11 +80,10 @@ class MMC(async_server):
         self.free_servers = asyncio.Semaphore(num_servers)
     
     async def _enter(self, uid):
-        await self.free_servers.acquire()
-        event_future = asyncio.Future()
-        self.system.push_event(self.system.T + random.expovariate(1.0 / self.serve_time), event_future)
-        await event_future
-        self.free_servers.release()  # Free the server
+        async with self.free_servers:
+            event_future = asyncio.Future()
+            self.system.push_event(self.system.T + random.expovariate(1.0 / self.serve_time), event_future)
+            await event_future
 
 class C_MM1(async_server):    
     def __init__(self, system, num_servers, serve_time):
@@ -206,18 +205,21 @@ class System:
             await asyncio.sleep(0.1)
             if hasattr(self.gpus, 'free_servers'):
                 free = self.gpus.free_servers._value
+                capacity = self.gpus.num_servers
+                queue_size = len(self.gpus.free_servers._waiters)
                 total_free_servers += free
                 sample_count += 1
                 avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free GPU servers: {free}, Avg: {avg:.2f}")
+                print(f"T={self.T:.2f} - Free: {free}/{capacity}, Queue: {queue_size}, Avg Free: {avg:.2f}")
             else:
                 # For NonSharedGpus, show each GPU's free servers
                 free_counts = [gpu.free_servers._value for gpu in self.gpus.gpus]
+                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.gpus]
                 avg_free = sum(free_counts) / len(free_counts)
                 total_free_servers += avg_free
                 sample_count += 1
                 overall_avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free GPU servers per instance: {free_counts}, Avg: {overall_avg:.2f}")
+                print(f"T={self.T:.2f} - Free: {free_counts}, Queue: {queue_sizes}, Avg Free: {overall_avg:.2f}")
 
     async def simulate(self):
         monitor_task = asyncio.create_task(self.monitor_gpus())
@@ -240,6 +242,7 @@ class System:
             t, counter, future = heapq.heappop(self.events)
             self.T = t
             future.set_result(None)  # Notify the future
+            await asyncio.sleep(0)  # Yield to let the notified task run
       
         self.terminate = True
         
