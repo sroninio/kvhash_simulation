@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from simulation_logic import System, Disk
 
-async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, print_statistics, storage_reqs_per_second, output_file):
+async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -32,7 +32,7 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                     is_shared_storage=is_shared_storage,
                     is_use_theoretical_agents=is_use_theoretical_agents,
                     print_statistics=print_statistics,
-                    storage_reqs_per_second=storage_reqs_per_second
+                    storage_blocks_per_second=storage_blocks_per_second
                 )
                 hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
@@ -186,10 +186,10 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        "--storage_reqs_per_second",
+        "--storage_blocks_per_second",
         type=float,
         default=0.0,
-        help="Storage requests per second (default: 0.0)"
+        help="Storage blocks per second (default: 0.0)"
     )
     
     parser.add_argument(
@@ -219,6 +219,6 @@ if __name__ == "__main__":
         is_shared_storage=args.is_shared_storage,
         is_use_theoretical_agents=args.is_use_theoretical_agents,
         print_statistics=args.print_statistics,
-        storage_reqs_per_second=args.storage_reqs_per_second,
+        storage_blocks_per_second=args.storage_blocks_per_second,
         output_file=args.output_file
     ))

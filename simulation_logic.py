@@ -111,7 +111,7 @@ class System:
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
         time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, \
-        print_statistics, storage_reqs_per_second):
+        print_statistics, storage_blocks_per_second):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -144,10 +144,11 @@ class System:
         self.event_counter = 0  # Tie-breaker for heap events
         self.terminate = False
         self.print_statistics = print_statistics
-        self.storage_reqs_per_second = storage_reqs_per_second
+        self.storage_blocks_per_second = storage_blocks_per_second
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
         self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
+        self.storage = MMC(self, 1, 1 / self.storage_blocks_per_second) if self.storage_blocks_per_second else None
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
 
@@ -186,6 +187,8 @@ class System:
                 conv.kvs.append((kv, indx_in_conversation)) 
                 if not valid_kv:
                     await self.gpus.enter(conv.conv_id)
+                elif self.storage:
+                    await self.storage.enter(conv.conv_id)
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, step)
             conv.kvs.append((kv, step))
@@ -200,31 +203,6 @@ class System:
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
     
-    
-    async def monitor_gpus(self):
-        total_free_servers = 0
-        sample_count = 0
-        
-        while not self.terminate:
-            await asyncio.sleep(0.1)
-            if hasattr(self.gpus, 'free_servers'):
-                free = self.gpus.free_servers._value
-                capacity = self.gpus.num_servers
-                queue_size = len(self.gpus.free_servers._waiters)
-                total_free_servers += free
-                sample_count += 1
-                avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free: {free}/{capacity}, Queue: {queue_size}, Avg Free: {avg:.2f}")
-            else:
-                # For NonSharedGpus, show each GPU's free servers
-                free_counts = [gpu.free_servers._value for gpu in self.gpus.gpus]
-                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.gpus]
-                avg_free = sum(free_counts) / len(free_counts)
-                total_free_servers += avg_free
-                sample_count += 1
-                overall_avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free: {free_counts}, Queue: {queue_sizes}, Avg Free: {overall_avg:.2f}")
-
     async def simulate(self):
         if self.print_statistics:
             monitor_task = asyncio.create_task(self.monitor_gpus())
@@ -292,7 +270,31 @@ class System:
         print("CACHE RESULTS")        
         print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
         print(f"Hits: {self.hits}, Misses: {self.misses}")
-        print("BW RESULTS")        
+        print("BW RESULTS")
+        print(f"Total Simulation Time (T): {self.T:.2f}")
         print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
         return hit_rate
+
+    async def monitor_gpus(self):
+        total_free_servers = 0
+        sample_count = 0      
+        while not self.terminate:
+            await asyncio.sleep(0.1)
+            if hasattr(self.gpus, 'free_servers'):
+                free = self.gpus.free_servers._value
+                capacity = self.gpus.num_servers
+                queue_size = len(self.gpus.free_servers._waiters)
+                total_free_servers += free
+                sample_count += 1
+                avg = total_free_servers / sample_count
+                print(f"T={self.T:.2f} - Free: {free}/{capacity}, Queue: {queue_size}, Avg Free: {avg:.2f}")
+            else:
+                # For NonSharedGpus, show each GPU's free servers
+                free_counts = [gpu.free_servers._value for gpu in self.gpus.gpus]
+                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.gpus]
+                avg_free = sum(free_counts) / len(free_counts)
+                total_free_servers += avg_free
+                sample_count += 1
+                overall_avg = total_free_servers / sample_count
+                print(f"T={self.T:.2f} - Free: {free_counts}, Queue: {queue_sizes}, Avg Free: {overall_avg:.2f}")
