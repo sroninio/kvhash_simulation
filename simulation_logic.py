@@ -228,6 +228,8 @@ class System:
             conv.phase_in_step = len(conv.kvs)
             p_miss = 1 - self.force_hit_ratio
             blocks_to_recalculate = math.ceil(p_miss * len(conv.kvs))
+            self.hits += len(conv.kvs) - blocks_to_recalculate
+            self.misses += blocks_to_recalculate
             if blocks_to_recalculate > 0: 
                 self.gpus.enter_to_gpus(conv, blocks_to_recalculate)
                 return
