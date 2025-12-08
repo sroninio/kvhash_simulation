@@ -110,7 +110,8 @@ class System:
     
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents):
+        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, \
+        print_statistics, storage_reqs_per_second):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -142,11 +143,14 @@ class System:
         self.hits = 0
         self.event_counter = 0  # Tie-breaker for heap events
         self.terminate = False
+        self.print_statistics = print_statistics
+        self.storage_reqs_per_second = storage_reqs_per_second
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
         self.gpus = MMC(self, total_gpus, step_time_in_gpu) if is_shared_storage else C_MM1(self, total_gpus, step_time_in_gpu)
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
+
         self.completed_conversations = 0
         self.inflight_conversation_count = 0
 
@@ -222,7 +226,8 @@ class System:
                 print(f"T={self.T:.2f} - Free: {free_counts}, Queue: {queue_sizes}, Avg Free: {overall_avg:.2f}")
 
     async def simulate(self):
-        monitor_task = asyncio.create_task(self.monitor_gpus())
+        if self.print_statistics:
+            monitor_task = asyncio.create_task(self.monitor_gpus())
         
         def on_conversation_done(task):
             self.inflight_conversation_count -= 1

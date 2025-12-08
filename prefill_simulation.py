@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from simulation_logic import System, Disk
 
-async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, output_file):
+async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, print_statistics, storage_reqs_per_second, output_file):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -30,7 +30,9 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                     context_window_size=context_window_size if context_window_size > 0 else steps,
                     force_hit_ratio=force_hit_ratio,
                     is_shared_storage=is_shared_storage,
-                    is_use_theoretical_agents=is_use_theoretical_agents
+                    is_use_theoretical_agents=is_use_theoretical_agents,
+                    print_statistics=print_statistics,
+                    storage_reqs_per_second=storage_reqs_per_second
                 )
                 hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
@@ -177,6 +179,20 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
+        "--print_statistics",
+        type=int,
+        default=0,
+        help="Print GPU statistics during simulation (1) or not (0) (default: 0)"
+    )
+    
+    parser.add_argument(
+        "--storage_reqs_per_second",
+        type=float,
+        default=0.0,
+        help="Storage requests per second (default: 0.0)"
+    )
+    
+    parser.add_argument(
         "--output_file",
         type=str,
         default=f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
@@ -202,5 +218,7 @@ if __name__ == "__main__":
         force_hit_ratio=args.force_hit_ratio,
         is_shared_storage=args.is_shared_storage,
         is_use_theoretical_agents=args.is_use_theoretical_agents,
+        print_statistics=args.print_statistics,
+        storage_reqs_per_second=args.storage_reqs_per_second,
         output_file=args.output_file
     ))
