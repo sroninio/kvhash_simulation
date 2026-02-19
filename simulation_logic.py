@@ -295,8 +295,8 @@ class System:
                 print(f"T={self.T:.2f} - Free: {free}/{capacity}, Queue: {queue_size}, Avg Free: {avg:.2f}")
             else:
                 # For NonSharedGpus, show each GPU's free servers
-                free_counts = [gpu.free_servers._value for gpu in self.gpus.gpus]
-                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.gpus]
+                free_counts = [gpu.free_servers._value for gpu in self.gpus.servers]
+                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.servers]
                 avg_free = sum(free_counts) / len(free_counts)
                 total_free_servers += avg_free
                 sample_count += 1
