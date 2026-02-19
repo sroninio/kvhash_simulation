@@ -282,23 +282,21 @@ class System:
 
     async def monitor_gpus(self):
         total_free_servers = 0
-        sample_count = 0      
+        total_queue_len = 0
+        sample_count = 0
         while not self.terminate:
             await asyncio.sleep(0.1)
             if hasattr(self.gpus, 'free_servers'):
                 free = self.gpus.free_servers._value
-                capacity = self.gpus.num_servers
                 queue_size = len(self.gpus.free_servers._waiters)
-                total_free_servers += free
-                sample_count += 1
-                avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free: {free}/{capacity}, Queue: {queue_size}, Avg Free: {avg:.2f}")
             else:
-                # For NonSharedGpus, show each GPU's free servers
-                free_counts = [gpu.free_servers._value for gpu in self.gpus.servers]
-                queue_sizes = [len(gpu.free_servers._waiters) for gpu in self.gpus.servers]
-                avg_free = sum(free_counts) / len(free_counts)
-                total_free_servers += avg_free
-                sample_count += 1
-                overall_avg = total_free_servers / sample_count
-                print(f"T={self.T:.2f} - Free: {free_counts}, Queue: {queue_sizes}, Avg Free: {overall_avg:.2f}")
+                free = sum([gpu.free_servers._value for gpu in self.gpus.servers])
+                queue_size = sum([len(gpu.free_servers._waiters) for gpu in self.gpus.servers])
+            
+            total_free_servers += free
+            total_queue_len += queue_size
+            sample_count += 1
+            
+            avg_free_ratio = (total_free_servers / sample_count) / self.gpus.num_servers if self.gpus.num_servers > 0 else 0.0
+            avg_queue_len = total_queue_len / sample_count
+            print(f"T={self.T:.2f} - Avg Free Ratio: {avg_free_ratio:.4f}, Avg Queue Len: {avg_queue_len:.2f}")
