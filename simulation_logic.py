@@ -92,7 +92,7 @@ class C_MM1(async_server):
         self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
     
     async def _enter(self, uid, works):
-        server = self.uid_to_server[uid]
+        server = random.choice(self.servers)
         await server._enter(uid, works)
 
 class System:
@@ -283,6 +283,7 @@ class System:
     async def monitor_gpus(self):
         total_free_servers = 0
         total_queue_len = 0
+        total_sleepers = 0
         sample_count = 0
         while not self.terminate:
             await asyncio.sleep(0.1)
@@ -295,8 +296,14 @@ class System:
             
             total_free_servers += free
             total_queue_len += queue_size
+            sleepers = self.agent_outside_service.num_servers - self.agent_outside_service.free_servers._value
+            total_sleepers += sleepers
             sample_count += 1
             
             avg_free_ratio = (total_free_servers / sample_count) / self.gpus.num_servers if self.gpus.num_servers > 0 else 0.0
+            avg_busy_ratio = 1.0 - avg_free_ratio
             avg_queue_len = total_queue_len / sample_count
-            print(f"T={self.T:.2f} - Avg Free Ratio: {avg_free_ratio:.4f}, Avg Queue Len: {avg_queue_len:.2f}")
+            avg_sleepers = total_sleepers / sample_count
+            curr_busy_ratio = (self.gpus.num_servers - free) / self.gpus.num_servers if self.gpus.num_servers > 0 else 0.0
+            print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, Queue={queue_size:.0f}, Sleepers={sleepers:.0f}")
+            print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}")
