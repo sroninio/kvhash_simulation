@@ -3,7 +3,7 @@
 import heapq
 import random
 import math
-from collections import deque, defaultdict
+from collections import deque, defaultdict, Counter
 from abc import ABC, abstractmethod
 from enum import Enum
 from functools import partial
@@ -63,9 +63,16 @@ class async_server(ABC):
         self.serve_time = serve_time
         self.inflights = 0
         self.num_completed = 0
+        self.samples = 0
+        self.total = 0
     
     @abstractmethod
     async def _enter(self, uid, works):
+        pass
+    
+    @abstractmethod
+    def get_free_and_queue(self):
+        """Return (free_count, queue_size)"""
         pass
     
     async def enter(self, uid, works = 1):
@@ -79,6 +86,9 @@ class MMC(async_server):
         super().__init__(system, num_servers, serve_time)
         self.free_servers = asyncio.Semaphore(num_servers)
     
+    def get_free_and_queue(self):
+        return self.free_servers._value, len(self.free_servers._waiters)
+    
     async def _enter(self, uid, works):
         async with self.free_servers:
             event_future = asyncio.Future()
@@ -88,11 +98,30 @@ class MMC(async_server):
 class C_MM1(async_server):    
     def __init__(self, system, num_servers, serve_time):
         super().__init__(system, num_servers, serve_time)
+        self.queue = deque()
+        self.counter = Counter()
         self.servers = [MMC(self.system, 1, self.serve_time) for _ in range(self.num_servers)]
         self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
     
+    def get_free_and_queue(self):
+        free = sum([gpu.free_servers._value for gpu in self.servers])
+        queue_size = sum([len(gpu.free_servers._waiters) for gpu in self.servers])
+        return free, queue_size
+    
     async def _enter(self, uid, works):
-        server = random.choice(self.servers)
+        server_idx = random.randrange(len(self.servers))
+        server = self.servers[server_idx]
+        
+        self.queue.append(server_idx)
+        self.counter[server_idx] += 1
+        
+        if len(self.queue) > len(self.servers):
+            x = self.queue.popleft()
+            self.counter[x] -= 1
+            if self.counter[x] == 0:
+                del self.counter[x]
+        self.samples += 1
+        self.total += len(self.counter)
         await server._enter(uid, works)
 
 class System:
@@ -154,6 +183,8 @@ class System:
 
         self.completed_conversations = 0
         self.inflight_conversation_count = 0
+        self.final_T = 1
+        self.final_completed_count = 0
 
         self.print_input_params(context_window_size, steps, total_gpus, is_shared_storage, is_use_theoretical_agents,
                             step_time_in_gpu, time_between_steps)
@@ -222,7 +253,10 @@ class System:
                 conv = self.conversation_manager.create_conversation()
                 task = asyncio.create_task(self.async_handle_conversation(conv))
                 task.add_done_callback(on_conversation_done)
-                self.inflight_conversation_count += 1                 
+                self.inflight_conversation_count += 1         
+            if (self.iterations - self.completed_conversations < self.num_inflight_agents) and (self.final_completed_count == 0):
+                self.final_T = self.T        
+                self.final_completed_count = self.completed_conversations
             if not self.events:
                 await asyncio.sleep(0)
                 continue   
@@ -275,8 +309,8 @@ class System:
         print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
         print(f"Hits: {self.hits}, Misses: {self.misses}")
         print("BW RESULTS")
-        print(f"Total Simulation Time (T): {self.T:.2f}")
-        print(f"\033[1;34mSimulation Requests Per Second: {self.iterations / self.T:.8f}\033[0m")
+        print(f"Total Simulation Time (T): {self.final_T:.2f}")
+        print(f"\033[1;34mSimulation Requests Per Second: {self.final_completed_count / self.final_T:.8f}, Max Possible Reqs Per Second: {self.gpu_requests_per_second:.8f}\033[0m")
         print("\033[1;33m=============================\033[0m")
         return hit_rate
 
@@ -287,12 +321,7 @@ class System:
         sample_count = 0
         while not self.terminate:
             await asyncio.sleep(0.1)
-            if hasattr(self.gpus, 'free_servers'):
-                free = self.gpus.free_servers._value
-                queue_size = len(self.gpus.free_servers._waiters)
-            else:
-                free = sum([gpu.free_servers._value for gpu in self.gpus.servers])
-                queue_size = sum([len(gpu.free_servers._waiters) for gpu in self.gpus.servers])
+            free, queue_size = self.gpus.get_free_and_queue()
             
             total_free_servers += free
             total_queue_len += queue_size
@@ -305,5 +334,8 @@ class System:
             avg_queue_len = total_queue_len / sample_count
             avg_sleepers = total_sleepers / sample_count
             curr_busy_ratio = (self.gpus.num_servers - free) / self.gpus.num_servers if self.gpus.num_servers > 0 else 0.0
+            avg_busy_servers = self.gpus.total / self.gpus.samples if self.gpus.samples > 0 else "NOT_IMPLEMENTED"
             print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, Queue={queue_size:.0f}, Sleepers={sleepers:.0f}")
             print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}")
+            print(f"T={self.T:.2f} - Avg Busy Servers: {avg_busy_servers}")
+            print("-" * 80)
