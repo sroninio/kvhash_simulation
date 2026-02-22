@@ -66,7 +66,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--disk_size_in_blocks",
         type=int,
-        default=0,
+        default=1,
         help="Disk size in blocks (default: 0)"
     )
     
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--force_hit_ratio",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Force hit ratio, value between 0.0 and 1.0 (default: 0.0)"
     )
     
@@ -181,7 +181,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--print_statistics",
         type=int,
-        default=0,
+        default=1,
         help="Print GPU statistics during simulation (1) or not (0) (default: 0)"
     )
     

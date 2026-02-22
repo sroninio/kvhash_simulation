@@ -134,8 +134,13 @@ class System:
         total_agent_time = total_time_in_gpu + total_time_spent_between_steps
         minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
         return gpu_requests_per_second, minimal_agent_max_bw
-    
-
+        
+    @staticmethod
+    def calculate_theoretical_bw2(steps, time_between_steps, step_time_in_gpu, total_gpus):
+        """Calculate theoretical bandwidth metrics"""
+        gpu_requests_per_second = total_gpus / (steps * step_time_in_gpu)
+        minimal_agent_max_bw = total_gpus * (1 + time_between_steps / step_time_in_gpu)
+        return gpu_requests_per_second, minimal_agent_max_bw 
     
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
@@ -149,7 +154,7 @@ class System:
             print(f"Error: force_hit_ratio ({force_hit_ratio}) must be between 0.0 and 1.0")
             exit(1)
 
-        gpu_requests_per_second, minimal_agent_max_bw = self.calculate_theoretical_bw(steps, time_between_steps, step_time_in_gpu, total_gpus) 
+        gpu_requests_per_second, minimal_agent_max_bw = self.calculate_theoretical_bw2(steps, time_between_steps, step_time_in_gpu, total_gpus) 
         
         self.disk_size_in_blocks = disk_size_in_blocks
         self.allow_holes_recalculation = allow_holes_recalculation
