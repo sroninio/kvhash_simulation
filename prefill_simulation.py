@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from simulation_logic import System, Disk
 
-async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, is_shared_storage, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
+async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
     disk = Disk(disk_size_in_blocks)
     first_conv_id = 0
     results = []
@@ -29,7 +29,7 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                     step_time_in_gpu=step_time_in_gpu,
                     context_window_size=context_window_size if context_window_size > 0 else steps,
                     force_hit_ratio=force_hit_ratio,
-                    is_shared_storage=is_shared_storage,
+                    scheduling_strategy=scheduling_strategy,
                     is_use_theoretical_agents=is_use_theoretical_agents,
                     print_statistics=print_statistics,
                     storage_blocks_per_second=storage_blocks_per_second
@@ -165,10 +165,11 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        "--is_shared_storage",
-        type=int,
-        default=1,
-        help="Use shared GPU storage (1) or non-shared (0) (default: 1)"
+        "--scheduling_strategy",
+        type=str,
+        default="shared_storage_least_busy",
+        choices=["shared_storage_least_busy", "local_storage_sticky"],
+        help="Scheduling strategy: 'shared_storage_least_busy' or 'local_storage_sticky' (default: shared_storage_least_busy)"
     )
     
     parser.add_argument(
@@ -216,7 +217,7 @@ if __name__ == "__main__":
         step_time_in_gpu=args.step_time_in_gpu,
         context_window_size=args.context_window_size,
         force_hit_ratio=args.force_hit_ratio,
-        is_shared_storage=args.is_shared_storage,
+        scheduling_strategy=args.scheduling_strategy,
         is_use_theoretical_agents=args.is_use_theoretical_agents,
         print_statistics=args.print_statistics,
         storage_blocks_per_second=args.storage_blocks_per_second,
