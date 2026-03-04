@@ -168,8 +168,8 @@ if __name__ == "__main__":
         "--scheduling_strategy",
         type=str,
         default="shared_storage_least_busy",
-        choices=["shared_storage_least_busy", "local_storage_sticky"],
-        help="Scheduling strategy: 'shared_storage_least_busy' or 'local_storage_sticky' (default: shared_storage_least_busy)"
+        choices=["shared_storage_least_busy", "local_storage_sticky", "local_storage_least_busy"],
+        help="Scheduling strategy: 'shared_storage_least_busy', 'local_storage_sticky', or 'local_storage_least_busy' (default: shared_storage_least_busy)"
     )
     
     parser.add_argument(

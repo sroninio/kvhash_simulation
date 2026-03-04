@@ -71,6 +71,8 @@ class async_server(ABC):
     @abstractmethod
     async def _enter(self, uid, works, is_real_work):
         pass
+
+
     
     def get_busy_reallyBusy_totalQueued(self):
         return self.works, self.real_works, self.total_queued
@@ -102,27 +104,36 @@ class MMC(async_server):
 
 
 class C_MM1(async_server):    
-    def __init__(self, system, num_servers, serve_time):
+    def __init__(self, system, num_servers, serve_time, scheduling_strategy):
         super().__init__(system, num_servers, serve_time)
         self.queue = deque()
         self.counter = Counter()
+        self.scheduling_strategy = scheduling_strategy
         self.servers = [MMC(self.system, 1, self.serve_time, self) for _ in range(self.num_servers)]
-        self.uid_to_server = defaultdict(lambda: random.choice(self.servers))
+    
+    def get_least_busy_server(self):
+        server = min(self.servers, key=lambda s: ((1 - s.free_servers._value) + len(s.free_servers._waiters), self.servers.index(s)))
+        return server, self.servers.index(server)
         
     async def _enter(self, uid, works, is_real_work):
-        server_idx = random.randrange(len(self.servers))
-        server = self.servers[server_idx]
-        
-        self.queue.append(server_idx)
-        self.counter[server_idx] += 1
-        
-        if len(self.queue) > len(self.servers):
-            x = self.queue.popleft()
-            self.counter[x] -= 1
-            if self.counter[x] == 0:
-                del self.counter[x]
-        self.samples += 1
-        self.total += len(self.counter)
+        if self.scheduling_strategy == "local_storage_sticky":
+            server_idx = random.randrange(len(self.servers))
+            server = self.servers[server_idx]
+            
+            self.queue.append(server_idx)
+            self.counter[server_idx] += 1
+            
+            if len(self.queue) > len(self.servers):
+                x = self.queue.popleft()
+                self.counter[x] -= 1
+                if self.counter[x] == 0:
+                    del self.counter[x]
+            self.samples += 1
+            self.total += len(self.counter)
+        elif self.scheduling_strategy == "local_storage_least_busy":
+            server, server_idx = self.get_least_busy_server()
+        else:
+            raise ValueError(f"ERROR: unexpected scheduling strategy: {self.scheduling_strategy}")
         await server._enter(uid, works, is_real_work)
 
 class System:
@@ -166,6 +177,7 @@ class System:
         self.evict_on_miss = evict_on_miss
         self.range_len = self.disk_size_in_blocks // self.ranges
         self.force_hit_ratio = force_hit_ratio
+        self.scheduling_strategy = scheduling_strategy
 
         self.gpu_requests_per_second = gpu_requests_per_second 
         self.minimal_agent_max_bw = minimal_agent_max_bw
@@ -182,7 +194,10 @@ class System:
         self.storage_blocks_per_second = storage_blocks_per_second
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
-        self.gpus = MMC(self, total_gpus, step_time_in_gpu) if scheduling_strategy == "shared_storage_least_busy" else C_MM1(self, total_gpus, step_time_in_gpu)
+        if scheduling_strategy == "shared_storage_least_busy":
+            self.gpus = MMC(self, total_gpus, step_time_in_gpu)
+        else:
+            self.gpus = C_MM1(self, total_gpus, step_time_in_gpu, scheduling_strategy)
         self.storage = MMC(self, 1, 1 / self.storage_blocks_per_second) if self.storage_blocks_per_second else None
 
         self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
@@ -228,8 +243,12 @@ class System:
                     to_read += 1       
             if self.storage and to_read > 0:
                 await self.storage.enter(conv.conv_id, to_read)
+            if self.scheduling_strategy == 'local_storage_least_busy':
+                _, server_idx = self.gpus.get_least_busy_server() 
+                if (server_idx != (conv.conv_id % self.gpus.num_servers)) and (step > 0):
+                    to_calc = len(conv.kvs)
             if self.gpus and to_calc > 0:
-                await self.gpus.enter(conv.conv_id, to_calc)
+                await self.gpus.enter(conv.conv_id, works=to_calc, is_real_work=False)
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, step)
             conv.kvs.append((kv, step))
