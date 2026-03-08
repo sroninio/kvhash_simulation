@@ -54,10 +54,21 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                     'TTFT' : agents / actual_rate
                 })
     
-    # Write results to Excel
     df = pd.DataFrame(results)
-    df.to_excel(output_file, index=False)
-    print(f"\nResults written to {output_file}")
+    
+    if output_file.endswith('.xlsx'):
+        output_file_excel = output_file
+        output_file_csv = output_file.replace('.xlsx', '.csv')
+    elif output_file.endswith('.csv'):
+        output_file_csv = output_file
+        output_file_excel = output_file.replace('.csv', '.xlsx')
+    else:
+        output_file_excel = output_file + '.xlsx'
+        output_file_csv = output_file + '.csv'
+    
+    df.to_excel(output_file_excel, index=False)
+    df.to_csv(output_file_csv, index=False)
+    print(f"\nResults written to {output_file_excel} and {output_file_csv}")
                 
 
 
