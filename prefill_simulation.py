@@ -37,6 +37,8 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                 )
                 hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
                 first_conv_id = system.conversation_manager.conv_id + 10
+
+                agents = system.num_inflight_agents
                 
                 # Collect results
                 results.append({
