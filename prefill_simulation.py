@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import pandas as pd
+import json
 from datetime import datetime
 from simulation_logic import System, Disk
 
@@ -64,162 +65,37 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     
     parser.add_argument(
-        "--disk_size_in_blocks",
-        type=int,
-        default=1,
-        help="Disk size in blocks (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--allow_holes_recalculation",
-        type=int,
-        default=1,
-        help="Allow holes recalculation (default: 1)"
-    )
-    
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=1500,
-        help="Number of iterations (default: 1500) Total number of conversations to simulate"
-    )
-    
-    parser.add_argument(
-        "--random_placement_on_miss",
-        type=int,
-        default=0,
-        help="Random placement on miss (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--evict_on_miss",
-        type=int,
-        default=1,
-        help="Evict on miss (default: 1)"
-    )
-    
-    parser.add_argument(
-        "--agents_list",
-        type=int,
-        nargs='+',
-        default=[1000, 2000, 4000, 8000, 16000, 32000, 64000],
-        help="List of inflight conversations to test (default: 1000 2000 4000 8000 16000 32000 64000)"
-    )
-    
-    parser.add_argument(
-        "--steps_list",
-        type=int,
-        nargs='+',
-        default=[10, 50, 100, 150],
-        help="List of step values to test (default: 10 50 100 150)"
-    )
-    
-    parser.add_argument(
-        "--ranges_list",
-        type=int,
-        nargs='+',
-        default=[1],
-        help="List of ranges values to test (default: 1 4 10)"
-    )
-    
-    parser.add_argument(
-        "--sim_ratio",
-        type=int,
-        default=1,
-        help="Simulation ratio divider (default: 1)"
-    )
-    
-    parser.add_argument(
-        "--time_between_steps",
-        type=float,
-        required=True,
-        help="Time between steps"
-    )
-    
-    parser.add_argument(
-        "--total_gpus",
-        type=int,
-        default=1,
-        help="Total number of GPUs (default: 1)"
-    )
-    
-    parser.add_argument(
-        "--step_time_in_gpu",
-        type=float,
-        required=True,
-        help="Step time in GPU"
-    )
-    
-    parser.add_argument(
-        "--context_window_size",
-        type=int,
-        default=0,
-        help="Context window size in kv blocks (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--force_hit_ratio",
-        type=float,
-        default=1.0,
-        help="Force hit ratio, value between 0.0 and 1.0 (default: 0.0)"
-    )
-    
-    parser.add_argument(
-        "--scheduling_strategy",
+        "-f", "--config_file",
         type=str,
-        default="shared_storage_least_busy",
-        choices=["shared_storage_least_busy", "local_storage_sticky", "local_storage_least_busy"],
-        help="Scheduling strategy: 'shared_storage_least_busy', 'local_storage_sticky', or 'local_storage_least_busy' (default: shared_storage_least_busy)"
-    )
-    
-    parser.add_argument(
-        "--is_use_theoretical_agents",
-        type=int,
-        default=0,
-        help="Use theoretical agents count (1) or actual agents (0) (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--print_statistics",
-        type=int,
-        default=1,
-        help="Print GPU statistics during simulation (1) or not (0) (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--storage_blocks_per_second",
-        type=float,
-        default=0.0,
-        help="Storage blocks per second (default: 0.0)"
-    )
-    
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        default=f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        help="Output file path (default: simulation_results_<timestamp>.xlsx)"
+        required=True,
+        help="Path to JSON config file"
     )
     
     args = parser.parse_args()
     
-    asyncio.run(main(
-        disk_size_in_blocks=args.disk_size_in_blocks,
-        allow_holes_recalculation=args.allow_holes_recalculation,
-        random_placement_on_miss=args.random_placement_on_miss,
-        evict_on_miss=args.evict_on_miss,
-        agents_list=args.agents_list,
-        steps_list=args.steps_list,
-        ranges_list=args.ranges_list,
-        sim_ratio=args.sim_ratio,
-        iterations=args.iterations,
-        time_between_steps=args.time_between_steps,
-        total_gpus=args.total_gpus,
-        step_time_in_gpu=args.step_time_in_gpu,
-        context_window_size=args.context_window_size,
-        force_hit_ratio=args.force_hit_ratio,
-        scheduling_strategy=args.scheduling_strategy,
-        is_use_theoretical_agents=args.is_use_theoretical_agents,
-        print_statistics=args.print_statistics,
-        storage_blocks_per_second=args.storage_blocks_per_second,
-        output_file=args.output_file
-    ))
+    with open(args.config_file, 'r') as f:
+        config = json.load(f)
+    
+    params = {
+        'disk_size_in_blocks': config.get('disk_size_in_blocks', 1),
+        'allow_holes_recalculation': config.get('allow_holes_recalculation', 1),
+        'random_placement_on_miss': config.get('random_placement_on_miss', 0),
+        'evict_on_miss': config.get('evict_on_miss', 1),
+        'agents_list': config['agents_list'],
+        'steps_list': config['steps_list'],
+        'ranges_list': config['ranges_list'],
+        'sim_ratio': config.get('sim_ratio', 1),
+        'iterations': config['iterations'],
+        'time_between_steps': config.get('time_between_steps', 1),
+        'total_gpus': config.get('total_gpus', 1),
+        'step_time_in_gpu': config.get('step_time_in_gpu', 1),
+        'context_window_size': config.get('context_window_size', 0),
+        'force_hit_ratio': config.get('force_hit_ratio', 0),
+        'scheduling_strategy': config.get('scheduling_strategy', 'shared_storage_least_busy'),
+        'is_use_theoretical_agents': config.get('is_use_theoretical_agents', 0),
+        'print_statistics': config.get('print_statistics', 1),
+        'storage_blocks_per_second': config.get('storage_blocks_per_second', 0.0),
+        'output_file': config.get('output_file', f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    }
+    
+    asyncio.run(main(**params))
