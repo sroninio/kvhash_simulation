@@ -7,55 +7,64 @@ import json
 from datetime import datetime
 from simulation_logic import System, Disk
 
-async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
+async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps_list, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
+    print ("CCCCCCCC")
     disk = Disk(disk_size_in_blocks)
+    print ("CCCCCCCC")
     first_conv_id = 0
     results = []
-    for agents in agents_list:
+    for time_between_steps in time_between_steps_list:
         for steps in steps_list:
             for ranges_val in ranges_list:
-                system = System(
-                    disk_size_in_blocks=disk_size_in_blocks // sim_ratio,
-                    steps=steps,
-                    allow_holes_recalculation=allow_holes_recalculation,
-                    num_inflight_agents=agents // sim_ratio,
-                    iterations=iterations,
-                    random_placement_on_miss=random_placement_on_miss,
-                    ranges=ranges_val,
-                    evict_on_miss=evict_on_miss,
-                    disk=disk,
-                    first_conv_id=first_conv_id,
-                    time_between_steps=time_between_steps,
-                    total_gpus=total_gpus,
-                    step_time_in_gpu=step_time_in_gpu,
-                    context_window_size=context_window_size if context_window_size > 0 else steps,
-                    force_hit_ratio=force_hit_ratio,
-                    scheduling_strategy=scheduling_strategy,
-                    is_use_theoretical_agents=is_use_theoretical_agents,
-                    print_statistics=print_statistics,
-                    storage_blocks_per_second=storage_blocks_per_second
-                )
-                hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
-                first_conv_id = system.conversation_manager.conv_id + 10
+                for agents_val in agents_list:
+                    system = System(
+                        disk_size_in_blocks=disk_size_in_blocks // sim_ratio,
+                        steps=steps,
+                        allow_holes_recalculation=allow_holes_recalculation,
+                        num_inflight_agents=agents_val,
+                        iterations=iterations,
+                        random_placement_on_miss=random_placement_on_miss,
+                        ranges=ranges_val,
+                        evict_on_miss=evict_on_miss,
+                        disk=disk,
+                        first_conv_id=first_conv_id,
+                        time_between_steps=time_between_steps,
+                        total_gpus=total_gpus,
+                        step_time_in_gpu=step_time_in_gpu,
+                        context_window_size=context_window_size if context_window_size > 0 else steps,
+                        force_hit_ratio=force_hit_ratio,
+                        scheduling_strategy=scheduling_strategy,
+                        is_use_theoretical_agents=is_use_theoretical_agents,
+                        print_statistics=print_statistics,
+                        storage_blocks_per_second=storage_blocks_per_second
+                    )
+                    hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
+                    first_conv_id = system.conversation_manager.conv_id + 10
 
-                agents = system.num_inflight_agents
-                
-                # Collect results
-                results.append({
-                    'agents': agents,
-                    'steps': steps,
-                    'ranges': ranges_val,
-                    'disk_size_in_blocks': disk_size_in_blocks,
-                    'disk_usage' : 1 /(disk_size_in_blocks / (agents * steps)),
-                    'hit_rate': hit_rate,
-                    'total_time': total_time,
-                    'total_iterations': total_iterations,
-                    'minimal_agent_max_rate' : minimal_agent_max_bw,
-                    'theoretical_rate_req_sec' : theoretical_rate,
-                    'actual_rate_req_sec' : actual_rate,
-                    'TTFT' : agents / actual_rate
-                })
-    
+                    agents = system.num_inflight_agents
+                    num_gpus = system.gpus.num_servers
+
+                    avg_busy_ratio = system.total_busy_servers / system.sample_count / system.gpus.num_servers if system.sample_count > 0 else 0
+                    avg_really_busy_ratio = system.total_really_busy_servers / system.sample_count / system.gpus.num_servers if system.sample_count > 0 else 0
+                    
+                    print(f"\033[1;31mAGENTS={agents}, STEPS={steps}, STEP_TIME_IN_GPU={step_time_in_gpu}, TIME_BETWEEN_STEPS={time_between_steps}, AVG_BUSY_RATIO={avg_busy_ratio:.4f}, AVG_REALLY_BUSY_RATIO={avg_really_busy_ratio:.4f}, HIT_RATIO={hit_rate:.4f}, THEORETICAL_BW={theoretical_rate:.4f}, REAL_BW={actual_rate:.4f}\033[0m")
+
+                    # Collect results
+                    results.append({
+                        #'disk_size_in_blocks': disk_size_in_blocks,
+                        #'ranges': ranges_val,
+                        'sleep_between_steps' : time_between_steps,
+                        'step_time_in_gpu' : step_time_in_gpu,
+                        'agents': agents,
+                        'steps': steps,
+                        #'num_gpus': num_gpus,
+                        'disk_usage' : 1 /(disk_size_in_blocks / (agents * steps)),
+                        'hit_rate': hit_rate,
+                        'avg_busy_ratio': avg_busy_ratio,
+                        'avg_really_busy_ratio': avg_really_busy_ratio,
+                        #'theoretical_rate_req_sec' : theoretical_rate,
+                        #'actual_rate_req_sec' : actual_rate
+                    })
     df = pd.DataFrame(results)
     
     if output_file.endswith('.xlsx'):
@@ -99,7 +108,7 @@ if __name__ == "__main__":
         'ranges_list': config['ranges_list'],
         'sim_ratio': config.get('sim_ratio', 1),
         'iterations': config['iterations'],
-        'time_between_steps': config.get('time_between_steps', 1),
+        'time_between_steps_list': config.get('time_between_steps_list', [1]),
         'total_gpus': config.get('total_gpus', 1),
         'step_time_in_gpu': config.get('step_time_in_gpu', 1),
         'context_window_size': config.get('context_window_size', 0),
