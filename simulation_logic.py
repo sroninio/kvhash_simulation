@@ -374,6 +374,6 @@ class System:
             total = self.hits + self.misses
             hit_rate = (self.hits / total * 100) if total > 0 else 0
             print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
-            print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.2f}%, Completed={self.completed_conversations}")
+            print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.8f}%, Completed={self.completed_conversations}")
             print(f"T={self.T:.2f} - Avg Busy Servers: {avg_busy_servers}, Time Between Steps: {self.time_between_steps}")
             print("-" * 80)
