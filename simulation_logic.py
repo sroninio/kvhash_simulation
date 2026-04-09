@@ -231,6 +231,7 @@ class System:
 
     async def async_handle_conversation(self, conv):
         for step in range(conv.conversation_length):
+            #print(f"\033[31mconversation with id {conv.conv_id} starts step {step}\033[0m")
             disable_all, to_read, to_calc = False, 0, 0
             for _ in range(len(conv.kvs)):
                 kv, indx_in_conversation = conv.kvs.popleft()
@@ -297,7 +298,8 @@ class System:
             t, counter, future = heapq.heappop(self.events)
             self.T = t
             future.set_result(None)  # Notify the future
-            await asyncio.sleep(0)  # Yield to let the notified task run
+            for _ in range(self.inflight_conversation_count):
+                await asyncio.sleep(0)  # Yield to let the notified task run
       
         print ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAA") 
         pending = asyncio.all_tasks() - {asyncio.current_task()}
