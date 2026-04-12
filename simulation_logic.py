@@ -62,24 +62,20 @@ class async_server(ABC):
         self.num_servers = num_servers
         self.serve_time = serve_time
         self.num_completed = 0
-        self.samples = 0
-        self.total = 0
         self.real_works = 0
         self.works = 0
         self.total_queued = 0
     
     @abstractmethod
-    async def _enter(self, uid, works, is_real_work):
+    def _enter(self, uid, works, is_real_work):
         pass
-
-
     
     def get_busy_reallyBusy_totalQueued(self):
         return self.works, self.real_works, self.total_queued
 
     async def enter(self, uid, works = 1, is_real_work = True):
         self.total_queued += 1
-        await self._enter(uid, works, is_real_work)
+        self._enter(uid, works, is_real_work)
         self.num_completed += 1
 
 class MMC(async_server):
@@ -87,27 +83,28 @@ class MMC(async_server):
         super().__init__(system, num_servers, serve_time)
         self.free_servers = asyncio.Semaphore(num_servers)
         self.father = father
-    
-    async def _enter(self, uid, works, is_real_work):
+        self.waiters_queue = deque()
+        self.is_busy = False
+
+    def _enter(self, uid, works, is_real_work):
         base_queue = self if not self.father else self.father
-        async with self.free_servers:
-            base_queue.total_queued -= 1
-            if is_real_work:
-                base_queue.real_works += 1
-            base_queue.works += 1
-            event_future = asyncio.Future()
-            self.system.push_event(self.system.T + works * (random.expovariate(1.0 / self.serve_time)), event_future)
-            await event_future
-            if is_real_work:
-                base_queue.real_works -= 1
-            base_queue.works -= 1
+        if self.is_busy:
+            yield (0, self.waiters_queue)
+        self.is_busy = True
+        base_queue.total_queued -= 1
+        if is_real_work:
+            base_queue.real_works += 1
+        base_queue.works += 1
+        yield (works * (random.expovariate(1.0 / self.serve_time)), self.waiters_queue) 
+        if is_real_work:
+            base_queue.real_works -= 1
+        base_queue.works -= 1  
+        self.is_busy = False
 
 
 class C_MM1(async_server):    
     def __init__(self, system, num_servers, serve_time, scheduling_strategy):
         super().__init__(system, num_servers, serve_time)
-        self.queue = deque()
-        self.counter = Counter()
         self.scheduling_strategy = scheduling_strategy
         self.servers = [MMC(self.system, 1, self.serve_time, self) for _ in range(self.num_servers)]
     
@@ -119,17 +116,6 @@ class C_MM1(async_server):
         if self.scheduling_strategy == "local_storage_sticky":
             server_idx = random.randrange(len(self.servers))
             server = self.servers[server_idx]
-            
-            self.queue.append(server_idx)
-            self.counter[server_idx] += 1
-            
-            if len(self.queue) > len(self.servers):
-                x = self.queue.popleft()
-                self.counter[x] -= 1
-                if self.counter[x] == 0:
-                    del self.counter[x]
-            self.samples += 1
-            self.total += len(self.counter)
         elif self.scheduling_strategy == "local_storage_least_busy":
             server, server_idx = self.get_least_busy_server()
         else:
@@ -372,10 +358,8 @@ class System:
 
 
 
-            avg_busy_servers = self.gpus.total / self.gpus.samples if self.gpus.samples > 0 else "NOT_IMPLEMENTED"
             total = self.hits + self.misses
             hit_rate = (self.hits / total * 100) if total > 0 else 0
             print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
             print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.8f}%, Completed={self.completed_conversations}")
-            print(f"T={self.T:.2f} - Avg Busy Servers: {avg_busy_servers}, Time Between Steps: {self.time_between_steps}")
             print("-" * 80)
