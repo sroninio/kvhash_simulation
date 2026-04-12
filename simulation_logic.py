@@ -7,7 +7,6 @@ from collections import deque, defaultdict, Counter
 from abc import ABC, abstractmethod
 from enum import Enum
 from functools import partial
-import asyncio
 
 
 class IOType(Enum):
@@ -82,15 +81,14 @@ class async_server(ABC):
 class MMC(async_server):
     def __init__(self, system, num_servers, serve_time, father = None):
         super().__init__(system, num_servers, serve_time)
-        self.free_servers = asyncio.Semaphore(num_servers)
+        self.free_server_slots = num_servers
         self.father = father
-        self.is_busy = False
 
     def _enter(self, uid, works, is_real_work):
         base_queue = self if not self.father else self.father
-        if self.is_busy:
+        if self.free_server_slots <= 0:
             yield (0, self)
-        self.is_busy = True
+        self.free_server_slots -= 1
         base_queue.total_queued -= 1
         if is_real_work:
             base_queue.real_works += 1
@@ -99,7 +97,7 @@ class MMC(async_server):
         if is_real_work:
             base_queue.real_works -= 1
         base_queue.works -= 1  
-        self.is_busy = False
+        self.free_server_slots += 1
 
 
 class C_MM1(async_server):    
@@ -109,7 +107,10 @@ class C_MM1(async_server):
         self.servers = [MMC(self.system, 1, self.serve_time, self) for _ in range(self.num_servers)]
     
     def get_least_busy_server(self):
-        server = min(self.servers, key=lambda s: ((1 - s.free_servers._value) + len(s.free_servers._waiters), self.servers.index(s)))
+        def load(s):
+            busy = s.num_servers - s.free_server_slots
+            return busy + len(s.waiters_queue)
+        server = min(self.servers, key=lambda s: (load(s), self.servers.index(s)))
         return server, self.servers.index(server)
         
     def _enter(self, uid, works, is_real_work):
@@ -175,7 +176,6 @@ class System:
         self.misses = 0
         self.hits = 0
         self.event_counter = 0  # Tie-breaker for heap events
-        self.terminate = False
         self.print_statistics = print_statistics
         self.storage_blocks_per_second = storage_blocks_per_second
         self.time_between_steps = time_between_steps
@@ -260,7 +260,7 @@ class System:
         virtual_time_between_statistics = 10 * max(self.step_time_in_gpu, self.time_between_steps)
         self.push_event(virtual_time_between_statistics, {'type':'stat'})
         while self.completed_conversations < self.iterations:
-            while self.inflight_conversation_count < self.num_inflight_agents: 
+            while self.inflight_conversation_count < self.num_inflight_agents:
                 conv = self.conversation_manager.create_conversation() 
                 self.inflight_conversation_count += 1
                 handler = self.async_handle_conversation(conv)
@@ -272,8 +272,9 @@ class System:
                 self.push_event(self.T + virtual_time_between_statistics, {'type':'stat'})
             elif event_dict['type'] == 'handler':
                 handlers_to_advance = [event_dict['func']]
-                if (event_dict['async_server'] is not None) and (len(event_dict['async_server'].waiters_queue) > 0): 
-                    handlers_to_advance.append(event_dict['async_server'].waiters_queue.dequeue())
+                srv = event_dict['async_server']
+                if srv is not None and len(srv.waiters_queue) > 0:
+                    handlers_to_advance.append(srv.waiters_queue.popleft())
                 for handler in handlers_to_advance:
                     res = next(handler, None)
                     if res is None:
@@ -282,11 +283,11 @@ class System:
                     else:
                         sleep_time, curr_server = res[0], res[1]
                         if sleep_time == 0:
-                            curr_server.waiters_queue.enqueue(handler)
+                            curr_server.waiters_queue.append(handler)
                         else:
                             self.push_event(self.T + sleep_time, {'type':'handler', 'func':handler, 'async_server' : curr_server})
             else:
-                raise ("UNKNOWN EVENT TYPE")
+                raise ValueError(f"UNKNOWN EVENT TYPE: {event_dict['type']!r}")
         self.final_T = self.T        
         self.final_completed_count = self.completed_conversations  
         hit_rate = self.print_output_params()
@@ -339,7 +340,7 @@ class System:
         self.total_busy_servers += busy
         self.total_really_busy_servers += really_busy
         self.total_queue_len += total_queued
-        sleepers = self.agent_outside_service.num_servers - self.agent_outside_service.free_servers._value
+        sleepers = self.agent_outside_service.num_servers - self.agent_outside_service.free_server_slots
         self.total_sleepers += sleepers
         self.sample_count += 1 
         

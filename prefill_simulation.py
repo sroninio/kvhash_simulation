@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-import asyncio
 import pandas as pd
 import json
 from datetime import datetime
 from simulation_logic import System, Disk
 
-async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps_list, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps_list, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
     print ("CCCCCCCC")
     disk = Disk(disk_size_in_blocks)
     print ("CCCCCCCC")
@@ -38,7 +37,7 @@ async def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_
                         print_statistics=print_statistics,
                         storage_blocks_per_second=storage_blocks_per_second
                     )
-                    hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = await system.simulate()
+                    hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = system.simulate()
                     first_conv_id = system.conversation_manager.conv_id + 10
 
                     agents = system.num_inflight_agents
@@ -120,4 +119,4 @@ if __name__ == "__main__":
         'output_file': config.get('output_file', f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
     }
     
-    asyncio.run(main(**params))
+    main(**params)
