@@ -65,6 +65,7 @@ class async_server(ABC):
         self.real_works = 0
         self.works = 0
         self.total_queued = 0
+        self.waiters_queue = deque()
     
     @abstractmethod
     def _enter(self, uid, works, is_real_work):
@@ -73,9 +74,9 @@ class async_server(ABC):
     def get_busy_reallyBusy_totalQueued(self):
         return self.works, self.real_works, self.total_queued
 
-    async def enter(self, uid, works = 1, is_real_work = True):
+    def enter(self, uid, works = 1, is_real_work = True):
         self.total_queued += 1
-        self._enter(uid, works, is_real_work)
+        yield from self._enter(uid, works, is_real_work)
         self.num_completed += 1
 
 class MMC(async_server):
@@ -83,19 +84,18 @@ class MMC(async_server):
         super().__init__(system, num_servers, serve_time)
         self.free_servers = asyncio.Semaphore(num_servers)
         self.father = father
-        self.waiters_queue = deque()
         self.is_busy = False
 
     def _enter(self, uid, works, is_real_work):
         base_queue = self if not self.father else self.father
         if self.is_busy:
-            yield (0, self.waiters_queue)
+            yield (0, self)
         self.is_busy = True
         base_queue.total_queued -= 1
         if is_real_work:
             base_queue.real_works += 1
         base_queue.works += 1
-        yield (works * (random.expovariate(1.0 / self.serve_time)), self.waiters_queue) 
+        yield (works * (random.expovariate(1.0 / self.serve_time)), self) 
         if is_real_work:
             base_queue.real_works -= 1
         base_queue.works -= 1  
@@ -112,7 +112,7 @@ class C_MM1(async_server):
         server = min(self.servers, key=lambda s: ((1 - s.free_servers._value) + len(s.free_servers._waiters), self.servers.index(s)))
         return server, self.servers.index(server)
         
-    async def _enter(self, uid, works, is_real_work):
+    def _enter(self, uid, works, is_real_work):
         if self.scheduling_strategy == "local_storage_sticky":
             server_idx = random.randrange(len(self.servers))
             server = self.servers[server_idx]
@@ -120,7 +120,7 @@ class C_MM1(async_server):
             server, server_idx = self.get_least_busy_server()
         else:
             raise ValueError(f"ERROR: unexpected scheduling strategy: {self.scheduling_strategy}")
-        await server._enter(uid, works, is_real_work)
+        yield from server._enter(uid, works, is_real_work)
 
 class System:
     @staticmethod
@@ -179,6 +179,7 @@ class System:
         self.print_statistics = print_statistics
         self.storage_blocks_per_second = storage_blocks_per_second
         self.time_between_steps = time_between_steps
+        self.step_time_in_gpu = step_time_in_gpu
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
         if scheduling_strategy == "shared_storage_least_busy":
@@ -199,10 +200,8 @@ class System:
         self.total_queue_len = 0
         self.total_sleepers = 0
         self.sample_count = 0
-        '''
         self.print_input_params(context_window_size, steps, total_gpus, scheduling_strategy, is_use_theoretical_agents,
                             step_time_in_gpu, time_between_steps)
-        '''
 
 
     def alloc_block(self, block):
@@ -215,7 +214,7 @@ class System:
         block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
 
-    async def async_handle_conversation(self, conv):
+    def async_handle_conversation(self, conv):
         for step in range(conv.conversation_length):
             #print(f"\033[31mconversation with id {conv.conv_id} starts step {step}\033[0m")
             disable_all, to_read, to_calc = False, 0, 0
@@ -236,20 +235,20 @@ class System:
                 elif self.storage:
                     to_read += 1       
             if self.storage and to_read > 0:
-                await self.storage.enter(conv.conv_id, to_read)
+                yield from self.storage.enter(conv.conv_id, to_read)
             if self.scheduling_strategy == 'local_storage_least_busy':
                 _, server_idx = self.gpus.get_least_busy_server() 
                 if (server_idx != (conv.conv_id % self.gpus.num_servers)) and (step > 0):
                     to_calc = len(conv.kvs)
             if self.gpus and to_calc > 0:
-                await self.gpus.enter(conv.conv_id, works=to_calc, is_real_work=False)
+                yield from self.gpus.enter(conv.conv_id, works=to_calc, is_real_work=False)
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, step)
             conv.kvs.append((kv, step))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
-            await self.gpus.enter(conv.conv_id)    
-            await self.agent_outside_service.enter(conv.conv_id)
+            yield from self.gpus.enter(conv.conv_id)    
+            yield from self.agent_outside_service.enter(conv.conv_id)
         
     
     def push_event(self, time, event_dict):
@@ -257,44 +256,42 @@ class System:
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
     
-    async def simulate(self):
-        if self.print_statistics:
-            monitor_task = asyncio.create_task(self.monitor_gpus())
-        
-        def on_conversation_done(task):
-            self.inflight_conversation_count -= 1
-            self.completed_conversations += 1
-
-        
+    def simulate(self):
+        virtual_time_between_statistics = 10 * max(self.step_time_in_gpu, self.time_between_steps)
+        self.push_event(virtual_time_between_statistics, {'type':'stat'})
         while self.completed_conversations < self.iterations:
-            if self.terminate:
-                print(f"Completed conversations: {self.completed_conversations}")
-            while self.inflight_conversation_count < min(self.num_inflight_agents,  self.iterations - self.completed_conversations):
-                conv = self.conversation_manager.create_conversation()
-                task = asyncio.create_task(self.async_handle_conversation(conv))
-                task.add_done_callback(on_conversation_done)
-                self.inflight_conversation_count += 1         
-            if (self.iterations - self.completed_conversations < self.num_inflight_agents) and (self.final_completed_count == 0):
-                self.final_T = self.T        
-                self.final_completed_count = self.completed_conversations
-                self.terminate = True
-            if not self.events:
-                await asyncio.sleep(0)
-                continue   
-            t, counter, future = heapq.heappop(self.events)
+            while self.inflight_conversation_count < self.num_inflight_agents: 
+                conv = self.conversation_manager.create_conversation() 
+                self.inflight_conversation_count += 1
+                handler = self.async_handle_conversation(conv)
+                self.push_event(self.T, {'type':'handler', 'func':handler, 'async_server' : None})
+            t, counter, event_dict = heapq.heappop(self.events) 
             self.T = t
-            future.set_result(None)  # Notify the future
-            for _ in range(self.inflight_conversation_count):
-                await asyncio.sleep(0)  # Yield to let the notified task run
-      
-        print ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAA") 
-        pending = asyncio.all_tasks() - {asyncio.current_task()}
-        if pending:
-            await asyncio.gather(*pending)
-        
+            if event_dict['type'] == 'stat':
+                self.monitor_gpus()
+                self.push_event(self.T + virtual_time_between_statistics, {'type':'stat'})
+            elif event_dict['type'] == 'handler':
+                handlers_to_advance = [event_dict['func']]
+                if (event_dict['async_server'] is not None) and (len(event_dict['async_server'].waiters_queue) > 0): 
+                    handlers_to_advance.append(event_dict['async_server'].waiters_queue.dequeue())
+                for handler in handlers_to_advance:
+                    res = next(handler, None)
+                    if res is None:
+                        self.inflight_conversation_count -= 1
+                        self.completed_conversations += 1
+                    else:
+                        sleep_time, curr_server = res[0], res[1]
+                        if sleep_time == 0:
+                            curr_server.waiters_queue.enqueue(handler)
+                        else:
+                            self.push_event(self.T + sleep_time, {'type':'handler', 'func':handler, 'async_server' : curr_server})
+            else:
+                raise ("UNKNOWN EVENT TYPE")
+        self.final_T = self.T        
+        self.final_completed_count = self.completed_conversations  
         hit_rate = self.print_output_params()
-        
         return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
+
         
     def print_input_params(self, context_window_size, steps, total_gpus, scheduling_strategy, is_use_theoretical_agents, 
                         step_time_in_gpu, time_between_steps):
@@ -337,29 +334,26 @@ class System:
         #print("\033[1;33m=============================\033[0m")
         return hit_rate
 
-    async def monitor_gpus(self):
-        monitor_print_counter = 0
-        while not self.terminate:
-            await asyncio.sleep(0.1)
-            busy, really_busy, total_queued = self.gpus.get_busy_reallyBusy_totalQueued()
-            self.total_busy_servers += busy
-            self.total_really_busy_servers += really_busy
-            self.total_queue_len += total_queued
-            sleepers = self.agent_outside_service.num_servers - self.agent_outside_service.free_servers._value
-            self.total_sleepers += sleepers
-            self.sample_count += 1 
-            
-            curr_busy_ratio = busy / self.gpus.num_servers
-            curr_really_busy_ratio = really_busy / self.gpus.num_servers
-            avg_busy_ratio = self.total_busy_servers / self.sample_count / self.gpus.num_servers 
-            avg_really_busy_ratio = self.total_really_busy_servers / self.sample_count / self.gpus.num_servers
-            avg_queue_len = self.total_queue_len / self.sample_count 
-            avg_sleepers = self.total_sleepers / self.sample_count
+    def monitor_gpus(self):
+        busy, really_busy, total_queued = self.gpus.get_busy_reallyBusy_totalQueued()
+        self.total_busy_servers += busy
+        self.total_really_busy_servers += really_busy
+        self.total_queue_len += total_queued
+        sleepers = self.agent_outside_service.num_servers - self.agent_outside_service.free_servers._value
+        self.total_sleepers += sleepers
+        self.sample_count += 1 
+        
+        curr_busy_ratio = busy / self.gpus.num_servers
+        curr_really_busy_ratio = really_busy / self.gpus.num_servers
+        avg_busy_ratio = self.total_busy_servers / self.sample_count / self.gpus.num_servers 
+        avg_really_busy_ratio = self.total_really_busy_servers / self.sample_count / self.gpus.num_servers
+        avg_queue_len = self.total_queue_len / self.sample_count 
+        avg_sleepers = self.total_sleepers / self.sample_count
 
 
 
-            total = self.hits + self.misses
-            hit_rate = (self.hits / total * 100) if total > 0 else 0
-            print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
-            print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.8f}%, Completed={self.completed_conversations}")
-            print("-" * 80)
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total * 100) if total > 0 else 0
+        print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
+        print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.8f}%, Completed={self.completed_conversations}")
+        print("-" * 80)
