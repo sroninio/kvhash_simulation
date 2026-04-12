@@ -64,7 +64,7 @@ class async_server(ABC):
         self.real_works = 0
         self.works = 0
         self.total_queued = 0
-        self.waiters_queue = deque()
+        self.waiters_queue = deque()  # FIFO: append on block, popleft on wake
     
     @abstractmethod
     def _enter(self, uid, works, is_real_work):
@@ -85,19 +85,23 @@ class MMC(async_server):
         self.father = father
 
     def _enter(self, uid, works, is_real_work):
+        #import ipdb; ipdb.set_trace()
         base_queue = self if not self.father else self.father
-        if self.free_server_slots <= 0:
+        if (self.free_server_slots <= 0) or (len(self.waiters_queue) > 0):
             yield (0, self)
+            #import ipdb; ipdb.set_trace()
         self.free_server_slots -= 1
         base_queue.total_queued -= 1
         if is_real_work:
             base_queue.real_works += 1
         base_queue.works += 1
         yield (works * (random.expovariate(1.0 / self.serve_time)), self) 
+        #import ipdb; ipdb.set_trace()
         if is_real_work:
             base_queue.real_works -= 1
         base_queue.works -= 1  
         self.free_server_slots += 1
+
 
 
 class C_MM1(async_server):    
@@ -255,7 +259,20 @@ class System:
         """Helper function to push events to heap with tie-breaker counter."""
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
-    
+
+    def advance_handler(self, handler):
+        res = next(handler, None)
+        if res is None:
+            self.inflight_conversation_count -= 1
+            self.completed_conversations += 1
+        else:
+            sleep_time, curr_server = res[0], res[1]
+            if sleep_time == 0:
+                curr_server.waiters_queue.append(handler)
+            else:
+                self.push_event(self.T + sleep_time, {'type':'handler', 'func':handler, 'async_server' : curr_server})
+
+
     def simulate(self):
         virtual_time_between_statistics = 10 * max(self.step_time_in_gpu, self.time_between_steps)
         self.push_event(virtual_time_between_statistics, {'type':'stat'})
@@ -271,21 +288,10 @@ class System:
                 self.monitor_gpus()
                 self.push_event(self.T + virtual_time_between_statistics, {'type':'stat'})
             elif event_dict['type'] == 'handler':
-                handlers_to_advance = [event_dict['func']]
                 srv = event_dict['async_server']
+                self.advance_handler(event_dict['func'])
                 if srv is not None and len(srv.waiters_queue) > 0:
-                    handlers_to_advance.append(srv.waiters_queue.popleft())
-                for handler in handlers_to_advance:
-                    res = next(handler, None)
-                    if res is None:
-                        self.inflight_conversation_count -= 1
-                        self.completed_conversations += 1
-                    else:
-                        sleep_time, curr_server = res[0], res[1]
-                        if sleep_time == 0:
-                            curr_server.waiters_queue.append(handler)
-                        else:
-                            self.push_event(self.T + sleep_time, {'type':'handler', 'func':handler, 'async_server' : curr_server})
+                    self.advance_handler(srv.waiters_queue.popleft())
             else:
                 raise ValueError(f"UNKNOWN EVENT TYPE: {event_dict['type']!r}")
         self.final_T = self.T        
