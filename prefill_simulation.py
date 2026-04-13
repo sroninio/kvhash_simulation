@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from simulation_logic import System, Disk
 
-def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps_list, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file):
+def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_miss, evict_on_miss, agents_list, steps_list, ranges_list, sim_ratio, iterations, time_between_steps_list, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, print_statistics, storage_blocks_per_second, output_file, monitor_interval_virtual_time=0):
     print ("CCCCCCCC")
     disk = Disk(disk_size_in_blocks)
     print ("CCCCCCCC")
@@ -35,7 +35,8 @@ def main(disk_size_in_blocks, allow_holes_recalculation, random_placement_on_mis
                         scheduling_strategy=scheduling_strategy,
                         is_use_theoretical_agents=is_use_theoretical_agents,
                         print_statistics=print_statistics,
-                        storage_blocks_per_second=storage_blocks_per_second
+                        storage_blocks_per_second=storage_blocks_per_second,
+                        monitor_interval_virtual_time=monitor_interval_virtual_time
                     )
                     hit_rate, total_time, total_iterations, theoretical_rate, minimal_agent_max_bw, actual_rate = system.simulate()
                     first_conv_id = system.conversation_manager.conv_id + 10
@@ -116,7 +117,8 @@ if __name__ == "__main__":
         'is_use_theoretical_agents': config.get('is_use_theoretical_agents', 0),
         'print_statistics': config.get('print_statistics', 1),
         'storage_blocks_per_second': config.get('storage_blocks_per_second', 0.0),
-        'output_file': config.get('output_file', f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+        'output_file': config.get('output_file', f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"),
+        'monitor_interval_virtual_time': config.get('monitor_interval_virtual_time', 0)
     }
     
     main(**params)

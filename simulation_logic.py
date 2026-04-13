@@ -148,7 +148,7 @@ class System:
     def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
         num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
         time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, \
-        print_statistics, storage_blocks_per_second):
+        print_statistics, storage_blocks_per_second, monitor_interval_virtual_time=0):
         if disk_size_in_blocks % ranges != 0:
             print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
             exit(1)
@@ -184,6 +184,7 @@ class System:
         self.storage_blocks_per_second = storage_blocks_per_second
         self.time_between_steps = time_between_steps
         self.step_time_in_gpu = step_time_in_gpu
+        self.monitor_interval_virtual_time = monitor_interval_virtual_time
 
         self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
         if scheduling_strategy == "shared_storage_least_busy":
@@ -274,8 +275,8 @@ class System:
 
 
     def simulate(self):
-        virtual_time_between_statistics = 10 * max(self.step_time_in_gpu, self.time_between_steps)
-        self.push_event(virtual_time_between_statistics, {'type':'stat'})
+        if self.monitor_interval_virtual_time > 0:
+            self.push_event(self.monitor_interval_virtual_time, {'type':'stat'})
         while self.completed_conversations < self.iterations:
             while self.inflight_conversation_count < self.num_inflight_agents:
                 conv = self.conversation_manager.create_conversation() 
@@ -286,7 +287,8 @@ class System:
             self.T = t
             if event_dict['type'] == 'stat':
                 self.monitor_gpus()
-                self.push_event(self.T + virtual_time_between_statistics, {'type':'stat'})
+                if self.monitor_interval_virtual_time > 0:
+                    self.push_event(self.T + self.monitor_interval_virtual_time, {'type':'stat'})
             elif event_dict['type'] == 'handler':
                 srv = event_dict['async_server']
                 self.advance_handler(event_dict['func'])
@@ -321,6 +323,7 @@ class System:
         print(f"step_time_in_gpu: {step_time_in_gpu}")
         print(f"steps: {steps}")
         print(f"time_between_steps: {time_between_steps}") 
+        print(f"monitor_interval_virtual_time: {self.monitor_interval_virtual_time}")
         print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
         print("BW THEORETICAL NUMBERS")        
         print(f"\033[1;34mmaximal possible gpu requests per second: {self.gpu_requests_per_second:.8f}\033[0m")
