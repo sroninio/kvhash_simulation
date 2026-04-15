@@ -128,94 +128,55 @@ class C_MM1(async_server):
         yield from server._enter(uid, works, is_real_work)
 
 class System:
-    @staticmethod
-    def calculate_theoretical_bw(steps, time_between_steps, step_time_in_gpu, total_gpus):
+    def calculate_theoretical_bw(self):
         """Calculate theoretical bandwidth metrics"""
-        total_time_spent_between_steps = (steps + 1) * time_between_steps
-        total_time_in_gpu = steps * step_time_in_gpu
-        gpu_requests_per_second = total_gpus * (1 / total_time_in_gpu) 
-        total_agent_time = total_time_in_gpu + total_time_spent_between_steps
-        minimal_agent_max_bw = gpu_requests_per_second * total_agent_time
-        return gpu_requests_per_second, minimal_agent_max_bw
-        
-    @staticmethod
-    def calculate_theoretical_bw2(steps, time_between_steps, step_time_in_gpu, total_gpus):
-        """Calculate theoretical bandwidth metrics"""
-        gpu_requests_per_second = total_gpus / (steps * step_time_in_gpu)
-        minimal_agent_max_bw = total_gpus * (1 + time_between_steps / step_time_in_gpu)
-        return gpu_requests_per_second, minimal_agent_max_bw 
-    
-    def __init__(self, disk_size_in_blocks, steps, allow_holes_recalculation, \
-        num_inflight_agents, iterations, random_placement_on_miss, ranges, evict_on_miss, disk, first_conv_id, \
-        time_between_steps, total_gpus, step_time_in_gpu, context_window_size, force_hit_ratio, scheduling_strategy, is_use_theoretical_agents, \
-        print_statistics, storage_blocks_per_second, monitor_interval_virtual_time=0):
-        if disk_size_in_blocks % ranges != 0:
-            print(f"Error: disk_size_in_blocks ({disk_size_in_blocks}) must be divisible by ranges ({ranges})")
-            exit(1)
-        
-        if not (0.0 <= force_hit_ratio <= 1.0):
-            print(f"Error: force_hit_ratio ({force_hit_ratio}) must be between 0.0 and 1.0")
-            exit(1)
+        gpu_max_possible_agents_per_second = self.params['total_gpus'] / (
+            self.params['steps'] * self.params['step_time_in_gpu']
+        )
+        minimal_inflight_agents_for_max_possible_agents_per_second = self.params['total_gpus'] * (
+            1 + self.params['time_between_steps'] / self.params['step_time_in_gpu']
+        )
+        return gpu_max_possible_agents_per_second, minimal_inflight_agents_for_max_possible_agents_per_second
 
-        gpu_requests_per_second, minimal_agent_max_bw = self.calculate_theoretical_bw2(steps, time_between_steps, step_time_in_gpu, total_gpus) 
-        
-        self.disk_size_in_blocks = disk_size_in_blocks
-        self.allow_holes_recalculation = allow_holes_recalculation
-        self.num_inflight_agents = num_inflight_agents if not is_use_theoretical_agents else int(minimal_agent_max_bw)
-        self.iterations = iterations
-        self.random_placement_on_miss = random_placement_on_miss
-        self.ranges = ranges
-        self.evict_on_miss = evict_on_miss
-        self.range_len = self.disk_size_in_blocks // self.ranges
-        self.force_hit_ratio = force_hit_ratio
-        self.scheduling_strategy = scheduling_strategy
+    def __init__(self, params):
+        self.params = params
+        self.gpu_max_possible_agents_per_second, self.minimal_inflight_agents_for_max_possible_agents_per_second = self.calculate_theoretical_bw()
+        self.num_inflight_agents = self.params['num_inflight_agents'] if not self.params['is_use_theoretical_agents'] else int(self.minimal_inflight_agents_for_max_possible_agents_per_second)
+        self.range_len = self.params['disk_size_in_blocks'] // self.params['ranges']
 
-        self.gpu_requests_per_second = gpu_requests_per_second 
-        self.minimal_agent_max_bw = minimal_agent_max_bw
-
+        print("System: constructing (this may take a while for large disk_size_in_blocks)...")
+        self.disk = Disk(self.params['disk_size_in_blocks'])
 
         self.events = []  # Min heap for events
-        self.disk = disk
         self.T = 0
-        self.misses = 0
-        self.hits = 0
         self.event_counter = 0  # Tie-breaker for heap events
-        self.print_statistics = print_statistics
-        self.storage_blocks_per_second = storage_blocks_per_second
-        self.time_between_steps = time_between_steps
-        self.step_time_in_gpu = step_time_in_gpu
-        self.monitor_interval_virtual_time = monitor_interval_virtual_time
 
-        self.agent_outside_service = MMC(self, self.num_inflight_agents, time_between_steps)
-        if scheduling_strategy == "shared_storage_least_busy":
-            self.gpus = MMC(self, total_gpus, step_time_in_gpu)
+
+        self.agent_outside_service = MMC(self, self.num_inflight_agents, self.params['time_between_steps'])
+        if self.params['scheduling_strategy'] == "shared_storage_least_busy":
+            self.gpus = MMC(self, self.params['total_gpus'], self.params['step_time_in_gpu'])
         else:
-            self.gpus = C_MM1(self, total_gpus, step_time_in_gpu, scheduling_strategy)
-        self.storage = MMC(self, 1, 1 / self.storage_blocks_per_second) if self.storage_blocks_per_second else None
-
-        self.conversation_manager = ConversationManager(self, time_between_steps, first_conv_id, steps, context_window_size)
+            self.gpus = C_MM1(self, self.params['total_gpus'], self.params['step_time_in_gpu'], self.params['scheduling_strategy'])
+        self.storage = MMC(self, 1, 1 / self.params['storage_blocks_per_second']) if self.params['storage_blocks_per_second'] else None
+        self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'], self.params['context_window_size'])
 
         self.completed_conversations = 0
         self.inflight_conversation_count = 0
-        self.final_T = 1
-        self.final_completed_count = 0
-        
+        self.misses = 0
+        self.hits = 0
         self.total_busy_servers = 0
         self.total_really_busy_servers = 0
         self.total_queue_len = 0
         self.total_sleepers = 0
         self.sample_count = 0
-        self.print_input_params(context_window_size, steps, total_gpus, scheduling_strategy, is_use_theoretical_agents,
-                            step_time_in_gpu, time_between_steps)
-
 
     def alloc_block(self, block):
         prev_range_idx = block.offset // self.range_len if block else -1
         while True:
-            range_idx = random.randrange(self.ranges)
-            if range_idx != prev_range_idx or self.ranges == 1:
+            range_idx = random.randrange(self.params['ranges'])
+            if range_idx != prev_range_idx or self.params['ranges'] == 1:
                 break
-        offset_in_range = random.randrange(self.range_len) if ((not block) or (self.random_placement_on_miss)) else (block.offset % self.range_len)
+        offset_in_range = random.randrange(self.range_len) if ((not block) or (self.params['random_placement_on_miss'])) else (block.offset % self.range_len)
         block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
 
@@ -225,13 +186,13 @@ class System:
             disable_all, to_read, to_calc = False, 0, 0
             for _ in range(len(conv.kvs)):
                 kv, indx_in_conversation = conv.kvs.popleft()
-                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not self.force_hit_ratio else (random.random() < self.force_hit_ratio)
-                disable_all = disable_all or ((not self.allow_holes_recalculation) and (not valid_kv))
+                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not self.params['force_hit_ratio'] else (random.random() < self.params['force_hit_ratio'])
+                disable_all = disable_all or ((not self.params['allow_holes_recalculation']) and (not valid_kv))
                 if (not disable_all) and (valid_kv):
                     self.hits += 1
                 else:
                     self.misses += 1
-                if not valid_kv and self.evict_on_miss:
+                if not valid_kv and self.params['evict_on_miss']:
                     kv = self.alloc_block(kv)
                     kv.take_ownership(conv.conv_id, indx_in_conversation)
                 conv.kvs.append((kv, indx_in_conversation)) 
@@ -241,7 +202,7 @@ class System:
                     to_read += 1       
             if self.storage and to_read > 0:
                 yield from self.storage.enter(conv.conv_id, to_read)
-            if self.scheduling_strategy == 'local_storage_least_busy':
+            if self.params['scheduling_strategy'] == 'local_storage_least_busy':
                 _, server_idx = self.gpus.get_least_busy_server() 
                 if (server_idx != (conv.conv_id % self.gpus.num_servers)) and (step > 0):
                     to_calc = len(conv.kvs)
@@ -275,9 +236,9 @@ class System:
 
 
     def simulate(self):
-        if self.monitor_interval_virtual_time > 0:
-            self.push_event(self.monitor_interval_virtual_time, {'type':'stat'})
-        while self.completed_conversations < self.iterations:
+        if self.params['monitor_interval_virtual_time'] > 0:
+            self.push_event(self.params['monitor_interval_virtual_time'], {'type':'stat'})
+        while self.completed_conversations < self.params['iterations']:
             while self.inflight_conversation_count < self.num_inflight_agents:
                 conv = self.conversation_manager.create_conversation() 
                 self.inflight_conversation_count += 1
@@ -287,8 +248,8 @@ class System:
             self.T = t
             if event_dict['type'] == 'stat':
                 self.monitor_gpus()
-                if self.monitor_interval_virtual_time > 0:
-                    self.push_event(self.T + self.monitor_interval_virtual_time, {'type':'stat'})
+                if self.params['monitor_interval_virtual_time'] > 0:
+                    self.push_event(self.T + self.params['monitor_interval_virtual_time'], {'type':'stat'})
             elif event_dict['type'] == 'handler':
                 srv = event_dict['async_server']
                 self.advance_handler(event_dict['func'])
@@ -296,53 +257,6 @@ class System:
                     self.advance_handler(srv.waiters_queue.popleft())
             else:
                 raise ValueError(f"UNKNOWN EVENT TYPE: {event_dict['type']!r}")
-        self.final_T = self.T        
-        self.final_completed_count = self.completed_conversations  
-        hit_rate = self.print_output_params()
-        return hit_rate, self.T, self.iterations, self.gpu_requests_per_second, self.minimal_agent_max_bw, self.iterations / self.T
-
-        
-    def print_input_params(self, context_window_size, steps, total_gpus, scheduling_strategy, is_use_theoretical_agents, 
-                        step_time_in_gpu, time_between_steps):
-        """Print simulation parameters"""
-        print("\033[1;33m\n=============================\033[0m")
-        print("CACHE PERF ANALISS")        
-        print(f"disk_size_in_blocks: {self.disk_size_in_blocks}")
-        print(f"allow_holes_recalculation: {self.allow_holes_recalculation}")
-        print(f"num_inflight_agents: {self.num_inflight_agents}")
-        print(f"iterations: {self.iterations}")
-        print(f"random_placement_on_miss: {self.random_placement_on_miss}")
-        print(f"ranges: {self.ranges}")
-        print(f"evict_on_miss: {self.evict_on_miss}")
-        print(f"context_window_size: {context_window_size}")
-        print(f"disk to data set ratio: {self.disk_size_in_blocks / (self.num_inflight_agents * steps)}")
-        print("BW PERF ANALISS")        
-        print(f"total_gpus: {total_gpus}")
-        print(f"scheduling_strategy: {scheduling_strategy}")
-        print(f"is_use_theoretical_agents: {is_use_theoretical_agents}")
-        print(f"step_time_in_gpu: {step_time_in_gpu}")
-        print(f"steps: {steps}")
-        print(f"time_between_steps: {time_between_steps}") 
-        print(f"monitor_interval_virtual_time: {self.monitor_interval_virtual_time}")
-        print(f"\033[1;31mnum_inflight_agents: {self.num_inflight_agents}\033[0m")
-        print("BW THEORETICAL NUMBERS")        
-        print(f"\033[1;34mmaximal possible gpu requests per second: {self.gpu_requests_per_second:.8f}\033[0m")
-        print(f"\033[1;31mminimal_agent_max_bw: {self.minimal_agent_max_bw:.2f}\033[0m")
-    
-    def print_output_params(self):
-        """Print simulation output"""
-        total = self.hits + self.misses
-        hit_rate = (self.hits / total * 100) if total > 0 else 0
-        #print("CACHE RESULTS")        
-        #print(f"Cache Hit Rate: {hit_rate:.2f}% ({self.hits}/{total})")
-        #print(f"Hits: {self.hits}, Misses: {self.misses}")
-        #print("BW RESULTS")
-        avg_busy_ratio = self.total_busy_servers / self.sample_count / self.gpus.num_servers if self.sample_count > 0 else 0
-        avg_really_busy_ratio = self.total_really_busy_servers / self.sample_count / self.gpus.num_servers if self.sample_count > 0 else 0
-        #print(f"\033[1;34mavg_busy_ratio={avg_busy_ratio:.4f}, avg_really_busy_ratio={avg_really_busy_ratio:.4f}\033[0m")
-        #print(f"\033[1;34mSimulation Requests Per Second: {self.final_completed_count / self.final_T:.8f}, Max Possible Reqs Per Second: {self.gpu_requests_per_second:.8f}\033[0m")
-        #print("\033[1;33m=============================\033[0m")
-        return hit_rate
 
     def monitor_gpus(self):
         busy, really_busy, total_queued = self.gpus.get_busy_reallyBusy_totalQueued()
