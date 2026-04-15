@@ -51,13 +51,6 @@ Each step new block of KVs is produced.  disk_size_in_blocks is disk size in blo
 
 follows vllm semantics: in case it is FALSE only the prefix until the first hole will be considered as found and all the rest recalculated 
 
-### `random_placement_on_miss`
-
-DEBUG param, default 0, dont change
-
-### `evict_on_miss`
-
-DEBUG param, default 1, dont change
 
 ### `num_inflight_agents`
 
@@ -120,6 +113,12 @@ where ti write the results
 How often (in virtual time) the simulator samples GPU busy/queue stats. If you set this to **`0` in `config.json`**, `prefill_simulation.py` replaces it with **`(step_time_in_gpu + time_between_steps) * 100`** before the run (same units as the other time parameters).
 
 ---
+### `random_placement_on_miss`
 
+DEBUG param, default 0, dont change
+
+### `evict_on_miss`
+
+DEBUG param, default 1, dont change
 ## Outputs
 
