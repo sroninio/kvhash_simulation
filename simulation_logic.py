@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import heapq
+from locale import locale_alias
 import random
 import math
 from collections import deque, defaultdict, Counter
 from abc import ABC, abstractmethod
+from typing import Any
 from enum import Enum
 from functools import partial
 
@@ -12,6 +14,19 @@ from functools import partial
 class IOType(Enum):
     READ = 0
     WRITE = 1
+
+class Waitable:
+    def __init__(self):
+        self.refcnt = 0
+
+    def add_waiter(self):
+        self.refcnt += 1
+
+    def remove_waiter(self):
+        self.refcnt -= 1
+
+    def all_waited(self):
+        return self.refcnt == 0
 
 class Block:
     def __init__(self, offset):
@@ -60,48 +75,53 @@ class async_server(ABC):
         self.system = system
         self.num_servers = num_servers
         self.serve_time = serve_time
-        self.num_completed = 0
         self.real_works = 0
         self.works = 0
         self.total_queued = 0
         self.waiters_queue = deque()  # FIFO: append on block, popleft on wake
     
+
     @abstractmethod
-    def _enter(self, uid, works, is_real_work):
+    def _async_enter(self, handler, waitable, uid, works, is_real_work):
         pass
-    
+
     def get_busy_reallyBusy_totalQueued(self):
         return self.works, self.real_works, self.total_queued
 
-    def enter(self, uid, works = 1, is_real_work = True):
-        self.total_queued += 1
-        yield from self._enter(uid, works, is_real_work)
-        self.num_completed += 1
+    def async_enter(self,handler,  waitable, uid, works=1, is_real_work=True):
+        return self._async_enter(handler, waitable, uid, works, is_real_work)
 
 class MMC(async_server):
     def __init__(self, system, num_servers, serve_time, father = None):
         super().__init__(system, num_servers, serve_time)
         self.free_server_slots = num_servers
         self.father = father
-
-    def _enter(self, uid, works, is_real_work):
-        #import ipdb; ipdb.set_trace()
+    
+    def _async_enter(self, handler, waitable, uid, works, is_real_work):
+        serve_time = works * (random.expovariate(1.0 / self.serve_time))
+        self.system.add_work_to_system(self, handler, serve_time, is_real_work, waitable)
+    
+    def enter_queue(self, handler, serve_time, is_real_work, waitable):
+        self.total_queued += 1
+        self.waiters_queue.append((handler, serve_time, is_real_work, waitable))
+    
+    def exit_queue(self):
+        self.total_queued -= 1
+        return self.waiters_queue.popleft()
+    
+    def enter_service(self, is_real_work):
         base_queue = self if not self.father else self.father
-        if (self.free_server_slots <= 0) or (len(self.waiters_queue) > 0):
-            yield (0, self)
-            #import ipdb; ipdb.set_trace()
         self.free_server_slots -= 1
-        base_queue.total_queued -= 1
         if is_real_work:
             base_queue.real_works += 1
         base_queue.works += 1
-        yield (works * (random.expovariate(1.0 / self.serve_time)), self) 
-        #import ipdb; ipdb.set_trace()
+    
+    def exit_service(self, is_real_work):
+        base_queue = self if not self.father else self.father
+        self.free_server_slots += 1
         if is_real_work:
             base_queue.real_works -= 1
-        base_queue.works -= 1  
-        self.free_server_slots += 1
-
+        base_queue.works -= 1 
 
 
 class C_MM1(async_server):    
@@ -116,8 +136,8 @@ class C_MM1(async_server):
             return busy + len(s.waiters_queue)
         server = min(self.servers, key=lambda s: (load(s), self.servers.index(s)))
         return server, self.servers.index(server)
-        
-    def _enter(self, uid, works, is_real_work):
+
+    def _async_enter(self, handler, waitable, uid, works, is_real_work):
         if self.scheduling_strategy == "local_storage_sticky":
             server_idx = random.randrange(len(self.servers))
             server = self.servers[server_idx]
@@ -125,7 +145,62 @@ class C_MM1(async_server):
             server, server_idx = self.get_least_busy_server()
         else:
             raise ValueError(f"ERROR: unexpected scheduling strategy: {self.scheduling_strategy}")
-        yield from server._enter(uid, works, is_real_work)
+        server._async_enter(handler, waitable, uid, works, is_real_work) 
+
+class Tier(C_MM1):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks):
+        super().__init__(system, num_queues, block_serve_time, "local_storage_sticky")
+        self.num_blocks = num_blocks
+        self.keys_map = set()
+
+    @abstractmethod
+    def write(self, key) -> tuple[bool, Any]:
+        pass
+
+    @abstractmethod
+    def remove(self, key):
+        pass
+
+    def has_key(self, key):
+        return key in self.keys_map
+
+    def read(self, key):
+        yield from self.enter(key)
+
+
+class LRU_Tier(Tier):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks):
+        super().__init__(system, num_queues, block_serve_time, num_blocks)
+        self._queue = deque()
+
+    def write(self, key) -> tuple[bool, Any]:
+        if key in self.keys_map:
+            return True, None
+        evicted = None
+        if len(self.keys_map) >= self.num_blocks:
+            evicted = self._queue.popleft()
+            self.keys_map.discard(evicted)
+        self.keys_map.add(key)
+        self._queue.append(key)
+        return True, evicted
+
+    def remove(self, key):
+        pass
+
+class NON_EVICTABLE_Tier(Tier):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks):
+        super().__init__(system, num_queues, block_serve_time, num_blocks)
+
+    def write(self, key) -> tuple[bool, Any]:
+        if key in self.keys_map:
+            return True, None
+        if len(self.keys_map) >= self.num_blocks:
+            return False, None
+        self.keys_map.add(key)
+        return True, None
+
+    def remove(self, key):
+        self.keys_map.discard(key)
 
 class System:
     def calculate_theoretical_bw(self):
@@ -180,7 +255,9 @@ class System:
         block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
 
-    def async_handle_conversation(self, conv):
+    def async_handle_conversation(self, d):
+        conv, handler = d['conv'], d['handler']
+        waitable = Waitable()
         for step in range(conv.conversation_length):
             #print(f"\033[31mconversation with id {conv.conv_id} starts step {step}\033[0m")
             disable_all, to_read, to_calc = False, 0, 0
@@ -201,38 +278,61 @@ class System:
                 elif self.storage:
                     to_read += 1       
             if self.storage and to_read > 0:
-                yield from self.storage.enter(conv.conv_id, to_read)
+                self.storage.async_enter(handler, waitable, conv.conv_id, works=to_read)
+                yield
             if self.params['scheduling_strategy'] == 'local_storage_least_busy':
                 _, server_idx = self.gpus.get_least_busy_server() 
                 if (server_idx != (conv.conv_id % self.gpus.num_servers)) and (step > 0):
                     to_calc = len(conv.kvs)
             if self.gpus and to_calc > 0:
-                yield from self.gpus.enter(conv.conv_id, works=to_calc, is_real_work=False)
+                self.gpus.async_enter(handler, waitable, conv.conv_id, works=to_calc, is_real_work=False) 
+                yield
             kv = self.alloc_block(None)
             kv.take_ownership(conv.conv_id, step)
             conv.kvs.append((kv, step))
             if len(conv.kvs) > conv.context_window_len:
                 conv.kvs.popleft()
-            yield from self.gpus.enter(conv.conv_id)    
-            yield from self.agent_outside_service.enter(conv.conv_id)
-        
-    
+            self.gpus.async_enter(handler, waitable, conv.conv_id, works=1, is_real_work=True) 
+            yield     
+            self.agent_outside_service.async_enter(handler, waitable, conv.conv_id, works=1) 
+            yield
+
     def push_event(self, time, event_dict):
         """Helper function to push events to heap with tie-breaker counter."""
         self.event_counter += 1
         heapq.heappush(self.events, (time, self.event_counter, event_dict))
 
-    def advance_handler(self, handler):
-        res = next(handler, None)
-        if res is None:
-            self.inflight_conversation_count -= 1
-            self.completed_conversations += 1
+    def add_work_to_system(self, handler, mmc, serve_time, is_real_work, waitable):
+        waitable.add_waiter()
+        if (mmc.free_server_slots <= 0) or (len(mmc.waiters_queue) > 0):
+            mmc.enter_queue(handler, mmc, serve_time, is_real_work, waitable)
         else:
-            sleep_time, curr_server = res[0], res[1]
-            if sleep_time == 0:
-                curr_server.waiters_queue.append(handler)
-            else:
-                self.push_event(self.T + sleep_time, {'type':'handler', 'func':handler, 'async_server' : curr_server})
+            mmc.enter_service(is_real_work)
+            self.push_event(self.T + serve_time, {'type':'handler', 'func':handler, 'mmc' : mmc, 'is_real_work' : is_real_work, 'waitable': waitable})
+
+
+    def process_completion_event(self, event_dict):
+        mmc = event_dict['mmc']
+        mmc.exit_service(event_dict['is_real_work'])
+        if len(mmc.waiters_queue) > 0:
+            (handler, serve_time, is_real_work, waitable) = mmc.exit_queue()
+            mmc.enter_service(is_real_work)
+            self.push_event(self.T + serve_time, {'type':'handler', 'func':handler, 'mmc' : mmc, 'is_real_work' : is_real_work, 'waitable': waitable}) 
+        waitable_of_completed  = event_dict['waitable']
+        waitable_of_completed.remove_waiter()
+        if waitable_of_completed.all_waited():
+            res = next(event_dict['handler'], None)
+            if res is None:
+                self.inflight_conversation_count -= 1
+                self.completed_conversations += 1
+             
+    def kick_off_new_conversation(self):
+        conv = self.conversation_manager.create_conversation() 
+        self.inflight_conversation_count += 1
+        d = {'conv':conv}
+        handler = self.async_handle_conversation(d)
+        d['handler'] = handler
+        next(handler)
 
 
     def simulate(self):
@@ -240,21 +340,13 @@ class System:
             self.push_event(self.params['monitor_interval_virtual_time'], {'type':'stat'})
         while self.completed_conversations < self.params['iterations']:
             while self.inflight_conversation_count < self.num_inflight_agents:
-                conv = self.conversation_manager.create_conversation() 
-                self.inflight_conversation_count += 1
-                handler = self.async_handle_conversation(conv)
-                self.push_event(self.T, {'type':'handler', 'func':handler, 'async_server' : None})
+                self.kick_off_new_conversation()
             t, counter, event_dict = heapq.heappop(self.events) 
             self.T = t
             if event_dict['type'] == 'stat':
                 self.monitor_gpus()
-                if self.params['monitor_interval_virtual_time'] > 0:
-                    self.push_event(self.T + self.params['monitor_interval_virtual_time'], {'type':'stat'})
             elif event_dict['type'] == 'handler':
-                srv = event_dict['async_server']
-                self.advance_handler(event_dict['func'])
-                if srv is not None and len(srv.waiters_queue) > 0:
-                    self.advance_handler(srv.waiters_queue.popleft())
+                self.process_completion_event(event_dict)
             else:
                 raise ValueError(f"UNKNOWN EVENT TYPE: {event_dict['type']!r}")
 
@@ -281,3 +373,5 @@ class System:
         print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
         print(f"T={self.T:.2f} - Avg:  Busy={avg_busy_ratio:.4f}, ReallyBusy={avg_really_busy_ratio:.4f}, Queue={avg_queue_len:.2f}, Sleepers={avg_sleepers:.2f}, HitRate={hit_rate:.8f}%, Completed={self.completed_conversations}")
         print("-" * 80)
+        if self.params['monitor_interval_virtual_time'] > 0:
+            self.push_event(self.T + self.params['monitor_interval_virtual_time'], {'type':'stat'})
