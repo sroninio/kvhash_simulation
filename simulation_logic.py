@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import enum
 import heapq
 from locale import locale_alias
+from pickle import TRUE
 import random
 import math
 from collections import deque, defaultdict, Counter
@@ -9,6 +11,8 @@ from abc import ABC, abstractmethod
 from typing import Any
 from enum import Enum
 from functools import partial
+
+from numpy import True_
 
 
 class IOType(Enum):
@@ -28,22 +32,8 @@ class Waitable:
     def all_waited(self):
         return self.refcnt == 0
 
-class Block:
-    def __init__(self, offset):
-        self.owner_conv_id = -1
-        self.owner_pos_in_conv = -1
-        self.offset = offset
-    
-    def is_belongs_to(self, conv_id, pos_in_conv):
-        return (self.owner_conv_id == conv_id) and (self.owner_pos_in_conv == pos_in_conv)
-    
-    def take_ownership(self, conv_id, pos_in_conv):
-        self.owner_conv_id = conv_id
-        self.owner_pos_in_conv = pos_in_conv
+
             
-class Disk:
-    def __init__(self, size):
-        self.disk = [Block(indx) for indx in range(size)] 
 
 class Conversation:
     def __init__(self, conv_id, conversation_length, context_window_len):
@@ -51,7 +41,7 @@ class Conversation:
         self.conversation_length = conversation_length 
         self.finished_steps = 0
         self.context_window_len = context_window_len
-        self.kvs = deque()
+        self.kvs = []
 
 
 class ConversationManager:
@@ -90,44 +80,32 @@ class HandleWrapper:
         waitable = Waitable()
         conv = self.conv
         system = self.system
-        params = system.params
         for step in range(conv.conversation_length):
-            disable_all, to_read, to_calc = False, 0, 0
-            for _ in range(len(conv.kvs)):
-                kv, indx_in_conversation = conv.kvs.popleft()
-                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not params['force_hit_ratio'] else (random.random() < params['force_hit_ratio'])
-                disable_all = disable_all or ((not params['allow_holes_recalculation']) and (not valid_kv))
-                if (not disable_all) and (valid_kv):
-                    system.hits += 1
-                else:
-                    system.misses += 1
-                if not valid_kv and params['evict_on_miss']:
-                    kv = system.alloc_block(kv)
-                    kv.take_ownership(conv.conv_id, indx_in_conversation)
-                conv.kvs.append((kv, indx_in_conversation))
-                if not valid_kv:
-                    to_calc += 1
-                elif system.storage:
-                    to_read += 1
-            if system.storage and to_read > 0:
-                system.storage.async_enter(self, waitable, conv.conv_id, works=to_read)
+            #READ FROM STORAGE 
+            found, not_found, should_wait = system.storage.try_read(self, conv.kvs, waitable)
+            system.hits += len(found)
+            system.misses += len(not_found)
+            if should_wait:
                 yield
-            if params['scheduling_strategy'] == 'local_storage_least_busy':
-                _, server_idx = system.gpus.get_least_busy_server()
-                if (server_idx != (conv.conv_id % system.gpus.num_servers)) and (step > 0):
-                    to_calc = len(conv.kvs)
-            if system.gpus and to_calc > 0:
-                system.gpus.async_enter(self, waitable, conv.conv_id, works=to_calc, is_real_work=False)
+            #RECALCULATE
+            if len(not_found) > 0:
+                system.gpus.async_enter(self, waitable, 17, works=len(not_found), is_real_work=False) 
                 yield
-            kv = system.alloc_block(None)
-            kv.take_ownership(conv.conv_id, step)
-            conv.kvs.append((kv, step))
-            if len(conv.kvs) > conv.context_window_len:
-                conv.kvs.popleft()
-            system.gpus.async_enter(self, waitable, conv.conv_id, works=1, is_real_work=True)
+                system.storage.write(not_found)
+            #CALCLUATE NEW BLOCK
+            system.gpus.async_enter(self, waitable, 17, works=1, is_real_work=True) 
             yield
-            system.agent_outside_service.async_enter(self, waitable, conv.conv_id, works=1)
+            #WRITE TO STORAGE
+            new_key = random.getrandbits(64) + 1 
+            conv.kvs.append(new_key)
+            system.storage.write([new_key])
+            #GO TO SLEEP
+            system.agent_outside_service.async_enter(self, waitable, 17, works=1) 
             yield
+    
+
+
+
 
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
@@ -210,56 +188,62 @@ class Tier(C_MM1):
     def __init__(self, system, num_queues, block_serve_time, num_blocks):
         super().__init__(system, num_queues, block_serve_time, "local_storage_sticky")
         self.num_blocks = num_blocks
-        self.keys_map = set()
 
     @abstractmethod
-    def write(self, key) -> tuple[bool, Any]:
+    def write(self, keys):
         pass
 
     @abstractmethod
+    def remove(self, key):
+        pass
+    
+    @abstractmethod
+    def has_key(self, key):
+        pass
+
+    def read(self, handler, waitable, num_blocks):
+        if self.num_servers == 0:
+            return False
+        else:
+            self.async_enter(handler, waitable, 17, num_blocks)
+            return True
+
+    def try_read(self, handler, kvs, waitable):
+        found, not_found = [], []
+        for key in kvs:
+            if self.has_key(key):
+                found.append(key)
+            else:
+                not_found.append(key)
+        should_wait = self.read(handler, waitable, len(found)) if found else False
+        return found, not_found, should_wait
+
+class DOCA_MEMOS(Tier):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks, num_ranges):
+        super().__init__(system, num_queues, block_serve_time, num_blocks)
+        self.range_len = num_blocks // num_ranges
+        self.num_ranges = num_ranges
+        print("System: constructing (this may take a while for large disk_size_in_blocks)...")
+        self.disk = [-1] * num_blocks
+    
+    def write(self, keys):
+        for key in keys:
+            range_idx = random.randrange(self.num_ranges)
+            offset_in_range = key % self.range_len
+            block_offset = range_idx * self.range_len + offset_in_range
+            self.disk[block_offset] = key
+    
     def remove(self, key):
         pass
 
     def has_key(self, key):
-        return key in self.keys_map
-
-    def read(self, key):
-        yield from self.enter(key)
-
-
-class LRU_Tier(Tier):
-    def __init__(self, system, num_queues, block_serve_time, num_blocks):
-        super().__init__(system, num_queues, block_serve_time, num_blocks)
-        self._queue = deque()
-
-    def write(self, key) -> tuple[bool, Any]:
-        if key in self.keys_map:
-            return True, None
-        evicted = None
-        if len(self.keys_map) >= self.num_blocks:
-            evicted = self._queue.popleft()
-            self.keys_map.discard(evicted)
-        self.keys_map.add(key)
-        self._queue.append(key)
-        return True, evicted
-
-    def remove(self, key):
-        pass
-
-class NON_EVICTABLE_Tier(Tier):
-    def __init__(self, system, num_queues, block_serve_time, num_blocks):
-        super().__init__(system, num_queues, block_serve_time, num_blocks)
-
-    def write(self, key) -> tuple[bool, Any]:
-        if key in self.keys_map:
-            return True, None
-        if len(self.keys_map) >= self.num_blocks:
-            return False, None
-        self.keys_map.add(key)
-        return True, None
-
-    def remove(self, key):
-        self.keys_map.discard(key)
+        offset_in_range = key % self.range_len
+        for range_idx in range(self.num_ranges):
+            if self.disk[range_idx * self.range_len + offset_in_range] == key:
+                return True
+        return False
+    
+    
 
 class System:
     def calculate_theoretical_bw(self):
@@ -276,10 +260,6 @@ class System:
         self.params = params
         self.gpu_max_possible_agents_per_second, self.minimal_inflight_agents_for_max_possible_agents_per_second = self.calculate_theoretical_bw()
         self.num_inflight_agents = self.params['num_inflight_agents'] if not self.params['is_use_theoretical_agents'] else int(self.minimal_inflight_agents_for_max_possible_agents_per_second)
-        self.range_len = self.params['disk_size_in_blocks'] // self.params['ranges']
-
-        print("System: constructing (this may take a while for large disk_size_in_blocks)...")
-        self.disk = Disk(self.params['disk_size_in_blocks'])
 
         self.events = []  # Min heap for events
         self.T = 0
@@ -291,7 +271,9 @@ class System:
             self.gpus = MMC(self, self.params['total_gpus'], self.params['step_time_in_gpu'])
         else:
             self.gpus = C_MM1(self, self.params['total_gpus'], self.params['step_time_in_gpu'], self.params['scheduling_strategy'])
-        self.storage = MMC(self, 1, 1 / self.params['storage_blocks_per_second']) if (self.params['storage_blocks_per_second'] > 0) else None
+
+        self.storage = DOCA_MEMOS(self, 0, 0,  self.params['disk_size_in_blocks'], self.params['ranges'])
+
         self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'], self.params['context_window_size'])
 
         self.completed_conversations = 0
@@ -304,15 +286,6 @@ class System:
         self.total_sleepers = 0
         self.sample_count = 0
 
-    def alloc_block(self, block):
-        prev_range_idx = block.offset // self.range_len if block else -1
-        while True:
-            range_idx = random.randrange(self.params['ranges'])
-            if range_idx != prev_range_idx or self.params['ranges'] == 1:
-                break
-        offset_in_range = random.randrange(self.range_len) if ((not block) or (self.params['random_placement_on_miss'])) else (block.offset % self.range_len)
-        block_offset = range_idx * self.range_len + offset_in_range 
-        return self.disk.disk[block_offset] 
 
     def push_event(self, time, event_dict):
         """Helper function to push events to heap with tie-breaker counter."""
