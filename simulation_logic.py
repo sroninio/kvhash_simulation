@@ -321,8 +321,9 @@ class System:
         waitable_of_completed  = event_dict['waitable']
         waitable_of_completed.remove_waiter()
         if waitable_of_completed.all_waited():
-            res = next(event_dict['func'], None)
-            if res is None:
+            try:
+                next(event_dict['func'])
+            except StopIteration:
                 self.inflight_conversation_count -= 1
                 self.completed_conversations += 1
              
