@@ -70,6 +70,65 @@ class ConversationManager:
         conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
         return conv
 
+class HandleWrapper:
+    def __init__(self, system, conv):
+        self.system = system
+        self.conv = conv
+        self._gen = self._run()
+
+    def start(self):
+        next(self._gen)
+
+    def resume(self):
+        try:
+            next(self._gen)
+            return False
+        except StopIteration:
+            return True
+
+    def _run(self):
+        waitable = Waitable()
+        conv = self.conv
+        system = self.system
+        params = system.params
+        for step in range(conv.conversation_length):
+            disable_all, to_read, to_calc = False, 0, 0
+            for _ in range(len(conv.kvs)):
+                kv, indx_in_conversation = conv.kvs.popleft()
+                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not params['force_hit_ratio'] else (random.random() < params['force_hit_ratio'])
+                disable_all = disable_all or ((not params['allow_holes_recalculation']) and (not valid_kv))
+                if (not disable_all) and (valid_kv):
+                    system.hits += 1
+                else:
+                    system.misses += 1
+                if not valid_kv and params['evict_on_miss']:
+                    kv = system.alloc_block(kv)
+                    kv.take_ownership(conv.conv_id, indx_in_conversation)
+                conv.kvs.append((kv, indx_in_conversation))
+                if not valid_kv:
+                    to_calc += 1
+                elif system.storage:
+                    to_read += 1
+            if system.storage and to_read > 0:
+                system.storage.async_enter(self, waitable, conv.conv_id, works=to_read)
+                yield
+            if params['scheduling_strategy'] == 'local_storage_least_busy':
+                _, server_idx = system.gpus.get_least_busy_server()
+                if (server_idx != (conv.conv_id % system.gpus.num_servers)) and (step > 0):
+                    to_calc = len(conv.kvs)
+            if system.gpus and to_calc > 0:
+                system.gpus.async_enter(self, waitable, conv.conv_id, works=to_calc, is_real_work=False)
+                yield
+            kv = system.alloc_block(None)
+            kv.take_ownership(conv.conv_id, step)
+            conv.kvs.append((kv, step))
+            if len(conv.kvs) > conv.context_window_len:
+                conv.kvs.popleft()
+            system.gpus.async_enter(self, waitable, conv.conv_id, works=1, is_real_work=True)
+            yield
+            system.agent_outside_service.async_enter(self, waitable, conv.conv_id, works=1)
+            yield
+
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
         self.system = system
@@ -255,48 +314,6 @@ class System:
         block_offset = range_idx * self.range_len + offset_in_range 
         return self.disk.disk[block_offset] 
 
-    def async_handle_conversation(self, d):
-        conv, handler = d['conv'], d['handler']
-        waitable = Waitable()
-        for step in range(conv.conversation_length):
-            #print(f"\033[31mconversation with id {conv.conv_id} starts step {step}\033[0m")
-            disable_all, to_read, to_calc = False, 0, 0
-            for _ in range(len(conv.kvs)):
-                kv, indx_in_conversation = conv.kvs.popleft()
-                valid_kv = kv.is_belongs_to(conv.conv_id, indx_in_conversation) if not self.params['force_hit_ratio'] else (random.random() < self.params['force_hit_ratio'])
-                disable_all = disable_all or ((not self.params['allow_holes_recalculation']) and (not valid_kv))
-                if (not disable_all) and (valid_kv):
-                    self.hits += 1
-                else:
-                    self.misses += 1
-                if not valid_kv and self.params['evict_on_miss']:
-                    kv = self.alloc_block(kv)
-                    kv.take_ownership(conv.conv_id, indx_in_conversation)
-                conv.kvs.append((kv, indx_in_conversation)) 
-                if not valid_kv:
-                    to_calc += 1
-                elif self.storage:
-                    to_read += 1       
-            if self.storage and to_read > 0:
-                self.storage.async_enter(handler, waitable, conv.conv_id, works=to_read)
-                yield
-            if self.params['scheduling_strategy'] == 'local_storage_least_busy':
-                _, server_idx = self.gpus.get_least_busy_server() 
-                if (server_idx != (conv.conv_id % self.gpus.num_servers)) and (step > 0):
-                    to_calc = len(conv.kvs)
-            if self.gpus and to_calc > 0:
-                self.gpus.async_enter(handler, waitable, conv.conv_id, works=to_calc, is_real_work=False) 
-                yield
-            kv = self.alloc_block(None)
-            kv.take_ownership(conv.conv_id, step)
-            conv.kvs.append((kv, step))
-            if len(conv.kvs) > conv.context_window_len:
-                conv.kvs.popleft()
-            self.gpus.async_enter(handler, waitable, conv.conv_id, works=1, is_real_work=True) 
-            yield     
-            self.agent_outside_service.async_enter(handler, waitable, conv.conv_id, works=1) 
-            yield
-
     def push_event(self, time, event_dict):
         """Helper function to push events to heap with tie-breaker counter."""
         self.event_counter += 1
@@ -308,7 +325,7 @@ class System:
             mmc.enter_queue(handler, serve_time, is_real_work, waitable)
         else:
             mmc.enter_service(is_real_work)
-            self.push_event(self.T + serve_time, {'type':'handler', 'func':handler, 'mmc' : mmc, 'is_real_work' : is_real_work, 'waitable': waitable})
+            self.push_event(self.T + serve_time, {'type': 'handler', 'handler': handler, 'mmc': mmc, 'is_real_work': is_real_work, 'waitable': waitable})
 
 
     def process_completion_event(self, event_dict):
@@ -317,23 +334,18 @@ class System:
         if len(mmc.waiters_queue) > 0:
             (handler, serve_time, is_real_work, waitable) = mmc.exit_queue()
             mmc.enter_service(is_real_work)
-            self.push_event(self.T + serve_time, {'type':'handler', 'func':handler, 'mmc' : mmc, 'is_real_work' : is_real_work, 'waitable': waitable}) 
+            self.push_event(self.T + serve_time, {'type': 'handler', 'handler': handler, 'mmc': mmc, 'is_real_work': is_real_work, 'waitable': waitable}) 
         waitable_of_completed  = event_dict['waitable']
         waitable_of_completed.remove_waiter()
         if waitable_of_completed.all_waited():
-            try:
-                next(event_dict['func'])
-            except StopIteration:
+            if event_dict['handler'].resume():
                 self.inflight_conversation_count -= 1
                 self.completed_conversations += 1
-             
+
     def kick_off_new_conversation(self):
-        conv = self.conversation_manager.create_conversation() 
+        conv = self.conversation_manager.create_conversation()
         self.inflight_conversation_count += 1
-        d = {'conv':conv}
-        handler = self.async_handle_conversation(d)
-        d['handler'] = handler
-        next(handler)
+        HandleWrapper(self, conv).start()
 
 
     def simulate(self):
