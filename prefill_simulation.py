@@ -75,7 +75,6 @@ if __name__ == "__main__":
         'time_between_steps': config['time_between_steps'],
         'total_gpus': config.get('total_gpus', 1),
         'step_time_in_gpu': config.get('step_time_in_gpu', 1),
-        'context_window_size': config.get('context_window_size', 0),
         'force_hit_ratio': config.get('force_hit_ratio', 0),
         'scheduling_strategy': config.get('scheduling_strategy', 'shared_storage_least_busy'),
         'is_use_theoretical_agents': config.get('is_use_theoretical_agents', 0),
@@ -91,8 +90,6 @@ if __name__ == "__main__":
     if not (0.0 <= params['force_hit_ratio'] <= 1.0):
         print(f"Error: force_hit_ratio ({params['force_hit_ratio']}) must be between 0.0 and 1.0")
         exit(1)
-    if params['context_window_size'] <= 0:
-        params['context_window_size'] = params['steps']
     if params['monitor_interval_virtual_time'] == 0:
         params['monitor_interval_virtual_time'] = (
             params['step_time_in_gpu'] + params['time_between_steps']

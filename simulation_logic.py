@@ -36,28 +36,25 @@ class Waitable:
             
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length, context_window_len):
+    def __init__(self, conv_id, conversation_length):
         self.conv_id = conv_id
         self.conversation_length = conversation_length 
-        self.finished_steps = 0
-        self.context_window_len = context_window_len
         self.kvs = []
 
 
 class ConversationManager:
-    def __init__(self, system, sleep_time_between_steps, first_conv_id, steps, context_window_size):
+    def __init__(self, system, sleep_time_between_steps, first_conv_id, steps):
         self.sleep_time_between_steps = sleep_time_between_steps
         self.system = system
         self.conv_id = first_conv_id
         self.steps = steps
-        self.context_window_size = context_window_size
 
     def get_unique_id(self):
         self.conv_id += 1
         return self.conv_id
     
     def create_conversation(self):
-        conv = Conversation(self.get_unique_id(), self.steps, self.context_window_size)
+        conv = Conversation(self.get_unique_id(), self.steps)
         return conv
 
 class HandleWrapper:
@@ -81,31 +78,22 @@ class HandleWrapper:
         conv = self.conv
         system = self.system
         for step in range(conv.conversation_length):
-            #READ FROM STORAGE 
-            found, not_found, should_wait = system.storage.try_read(self, conv.kvs, waitable)
-            system.hits += len(found)
-            system.misses += len(not_found)
+            missing = [True] * len(conv.kvs)
+            should_wait = system.storage.try_read(self, conv.kvs, missing, waitable)
+            n_miss = sum(missing)
+            system.hits += len(conv.kvs) - n_miss
+            system.misses += n_miss
             if should_wait:
                 yield
-            #RECALCULATE
-            if len(not_found) > 0:
-                system.gpus.async_enter(self, waitable, 17, works=len(not_found), is_real_work=False) 
+            if n_miss > 0:
+                system.gpus.async_enter(self, waitable, 17, works=n_miss, is_real_work=False) 
                 yield
-                system.storage.write(not_found)
-            #CALCLUATE NEW BLOCK
             system.gpus.async_enter(self, waitable, 17, works=1, is_real_work=True) 
             yield
-            #WRITE TO STORAGE
-            new_key = random.getrandbits(64) + 1 
-            conv.kvs.append(new_key)
-            system.storage.write([new_key])
-            #GO TO SLEEP
+            conv.kvs.append(random.getrandbits(64) + 1) 
+            system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]] + [conv.kvs[-1]])
             system.agent_outside_service.async_enter(self, waitable, 17, works=1) 
             yield
-    
-
-
-
 
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
@@ -208,15 +196,15 @@ class Tier(C_MM1):
             self.async_enter(handler, waitable, 17, num_blocks)
             return True
 
-    def try_read(self, handler, kvs, waitable):
-        found, not_found = [], []
-        for key in kvs:
-            if self.has_key(key):
-                found.append(key)
-            else:
-                not_found.append(key)
-        should_wait = self.read(handler, waitable, len(found)) if found else False
-        return found, not_found, should_wait
+    def try_read(self, handler, kvs, missing, waitable):
+        found_count = 0
+        for i in range(len(kvs)):
+            if not missing[i]:
+                continue
+            if self.has_key(kvs[i]):
+                missing[i] = False
+                found_count += 1
+        return self.read(handler, waitable, found_count) if found_count else False
 
 class DOCA_MEMOS(Tier):
     def __init__(self, system, num_queues, block_serve_time, num_blocks, num_ranges):
@@ -232,6 +220,7 @@ class DOCA_MEMOS(Tier):
             offset_in_range = key % self.range_len
             block_offset = range_idx * self.range_len + offset_in_range
             self.disk[block_offset] = key
+        return []
     
     def remove(self, key):
         pass
@@ -242,8 +231,46 @@ class DOCA_MEMOS(Tier):
             if self.disk[range_idx * self.range_len + offset_in_range] == key:
                 return True
         return False
+
+
+class LRU(Tier):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks):
+        super().__init__(system, num_queues, block_serve_time, num_blocks) 
+        self.keys = set()
+        self.lru = deque()
+
+    def write(self, keys_to_write):
+        evicted = []
+        for key in set(keys_to_write) - self.keys:
+            self.keys.add(key)
+            self.lru.append(key)
+            if len(self.keys) > self.num_blocks:
+                old = self.lru.popleft()
+                self.keys.discard(old)
+                evicted.append(old)
+        return evicted
+
+    def remove(self, key):
+        pass
+
+    def has_key(self, key):
+        return key in self.keys
+
+class StorageManager:
+    def __init__(self, tiers_list):
+        self.tiers_list = tiers_list
     
-    
+    def write(self, keys):
+        keys_to_write = keys
+        tier_indx = 0
+        while tier_indx < len(self.tiers_list) and keys_to_write:
+            keys_to_write = self.tiers_list[tier_indx].write(keys_to_write)
+            tier_indx += 1
+
+    def try_read(self, handler, kvs, missing, waitable):
+        return any(tier.try_read(handler, kvs, missing, waitable) for tier in self.tiers_list)
+
+  
 
 class System:
     def calculate_theoretical_bw(self):
@@ -272,9 +299,9 @@ class System:
         else:
             self.gpus = C_MM1(self, self.params['total_gpus'], self.params['step_time_in_gpu'], self.params['scheduling_strategy'])
 
-        self.storage = DOCA_MEMOS(self, 0, 0,  self.params['disk_size_in_blocks'], self.params['ranges'])
+        self.storage = StorageManager([DOCA_MEMOS(self, 0, 0, self.params['disk_size_in_blocks'], self.params['ranges'])])
 
-        self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'], self.params['context_window_size'])
+        self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'])
 
         self.completed_conversations = 0
         self.inflight_conversation_count = 0
