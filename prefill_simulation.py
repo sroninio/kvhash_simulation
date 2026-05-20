@@ -75,6 +75,7 @@ if __name__ == "__main__":
         'time_between_steps': config['time_between_steps'],
         'total_gpus': config.get('total_gpus', 1),
         'step_time_in_gpu': config.get('step_time_in_gpu', 1),
+        'is_linear_step_time': config['is_linear_step_time'],
         'force_hit_ratio': config.get('force_hit_ratio', 0),
         'scheduling_strategy': config.get('scheduling_strategy', 'shared_storage_least_busy'),
         'is_use_theoretical_agents': config.get('is_use_theoretical_agents', 0),

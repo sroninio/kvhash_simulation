@@ -323,11 +323,14 @@ class StorageManager:
 class System:
     def calculate_theoretical_bw(self):
         """Calculate theoretical bandwidth metrics"""
+        step_time = self.params['step_time_in_gpu']
+        if self.params['is_linear_step_time']:
+            step_time = step_time * self.params['steps'] / 2
         gpu_max_possible_agents_per_second = self.params['total_gpus'] / (
-            self.params['steps'] * self.params['step_time_in_gpu']
+            self.params['steps'] * step_time
         )
         minimal_inflight_agents_for_max_possible_agents_per_second = self.params['total_gpus'] * (
-            1 + self.params['time_between_steps'] / self.params['step_time_in_gpu']
+            1 + self.params['time_between_steps'] / step_time
         )
         return gpu_max_possible_agents_per_second, minimal_inflight_agents_for_max_possible_agents_per_second
 
