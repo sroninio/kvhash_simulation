@@ -78,6 +78,10 @@ class HandleWrapper:
         conv = self.conv
         system = self.system
         for step in range(conv.conversation_length):
+            n_read = len(conv.kvs)
+            if n_read > 0:
+                if not system.blocks_buffers.acquire(n_read, self, waitable):
+                    yield
             missing = [True] * len(conv.kvs)
             should_wait = system.storage.try_read(self, conv.kvs, missing, waitable)
             n_miss = sum(missing)
@@ -93,8 +97,33 @@ class HandleWrapper:
             yield
             conv.kvs.append(random.getrandbits(64) + 1) 
             system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]] + [conv.kvs[-1]])
+            if n_read > 0:
+                system.blocks_buffers.release(n_read)
             system.agent_outside_service.async_enter(self, waitable, 17, works=1) 
             yield
+
+class AsyncResource:
+    def __init__(self, allowed_blocks):
+        self.allowed_blocks = allowed_blocks
+        self.used_blocks = 0
+        self.queue = deque()
+
+    def acquire(self, num_blocks, handler, waitable):
+        if not self.queue and self.used_blocks + num_blocks <= self.allowed_blocks:
+            self.used_blocks += num_blocks
+            return True
+        self.queue.append((num_blocks, handler, waitable))
+        waitable.add_waiter()
+        return False
+
+    def release(self, num_blocks):
+        self.used_blocks -= num_blocks
+        while self.queue and self.used_blocks + self.queue[0][0] <= self.allowed_blocks:
+            nb, handler, w = self.queue.popleft()
+            self.used_blocks += nb
+            w.remove_waiter()
+            if w.all_waited():
+                handler.resume()
 
 class async_server(ABC):
     def __init__(self, system, num_servers, serve_time):
@@ -319,6 +348,7 @@ class System:
             self.gpus = C_MM1(self, self.params['total_gpus'], self.params['step_time_in_gpu'], self.params['scheduling_strategy'])
 
         self.storage = build_storage_manager(self, self.params)
+        self.blocks_buffers = AsyncResource(self.params['blocks_buffers'])
 
         self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'])
 

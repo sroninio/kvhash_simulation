@@ -63,8 +63,8 @@ if __name__ == "__main__":
     
     with open(args.config_file, 'r') as f:
         config = json.load(f)
-    
     params = {
+        'blocks_buffers': config['blocks_buffers'],
         'storage_tiers': config['storage_tiers'],
         'allow_holes_recalculation': config.get('allow_holes_recalculation', 1),
         'random_placement_on_miss': config.get('random_placement_on_miss', 0),
