@@ -81,7 +81,8 @@ class HandleWrapper:
             missing = [True] * len(conv.kvs)
             should_wait = system.storage.try_read(self, conv.kvs, missing, waitable)
             n_miss = sum(missing)
-            system.hits += len(conv.kvs) - n_miss
+            n_hit = len(conv.kvs) - n_miss
+            system.hits += n_hit
             system.misses += n_miss
             if should_wait:
                 yield
@@ -256,6 +257,24 @@ class LRU(Tier):
     def has_key(self, key):
         return key in self.keys
 
+def build_storage_manager(system, params):
+    tiers = []
+    for cfg in params['storage_tiers']:
+        t = cfg['type']
+        num_blocks = cfg['num_blocks']
+        num_queues = cfg['num_queues']
+        block_serve_time = cfg['block_serve_time']
+        if t == 'lru':
+            tiers.append(LRU(system, num_queues, block_serve_time, num_blocks))
+        elif t == 'memos':
+            num_ranges = cfg['num_ranges']
+            if num_blocks % num_ranges != 0:
+                raise ValueError(f"memos num_blocks ({num_blocks}) must be divisible by num_ranges ({num_ranges})")
+            tiers.append(DOCA_MEMOS(system, num_queues, block_serve_time, num_blocks, num_ranges))
+        else:
+            raise ValueError(f"unknown storage tier type: {t!r}")
+    return StorageManager(tiers)
+
 class StorageManager:
     def __init__(self, tiers_list):
         self.tiers_list = tiers_list
@@ -299,7 +318,7 @@ class System:
         else:
             self.gpus = C_MM1(self, self.params['total_gpus'], self.params['step_time_in_gpu'], self.params['scheduling_strategy'])
 
-        self.storage = StorageManager([DOCA_MEMOS(self, 0, 0, self.params['disk_size_in_blocks'], self.params['ranges'])])
+        self.storage = build_storage_manager(self, self.params)
 
         self.conversation_manager = ConversationManager(self, self.params['time_between_steps'], 0, self.params['steps'])
 
@@ -378,9 +397,7 @@ class System:
         avg_really_busy_ratio = self.total_really_busy_servers / self.sample_count / self.gpus.num_servers
         avg_queue_len = self.total_queue_len / self.sample_count 
         avg_sleepers = self.total_sleepers / self.sample_count
-
-
-
+        print(f"hits={self.hits} misses={self.misses}")
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
         print(f"T={self.T:.2f} - Curr: Busy={curr_busy_ratio:.4f}, ReallyBusy={curr_really_busy_ratio:.4f}, Queue={total_queued:.0f}, Sleepers={sleepers:.0f}")
