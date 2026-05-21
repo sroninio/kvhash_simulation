@@ -94,7 +94,7 @@ if __name__ == "__main__":
             if tier['num_blocks'] % tier['num_ranges'] != 0:
                 print(f"Error: storage_tiers[{i}] num_blocks ({tier['num_blocks']}) must be divisible by num_ranges ({tier['num_ranges']})")
                 exit(1)
-        elif tier['type'] != 'lru':
+        elif tier['type'] not in ('lru', 'allocrelease'):
             print(f"Error: storage_tiers[{i}] unknown type {tier['type']!r}")
             exit(1)
     if not (0.0 <= params['force_hit_ratio'] <= 1.0):

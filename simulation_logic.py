@@ -101,6 +101,7 @@ class HandleWrapper:
                 system.blocks_buffers.release(n_read)
             system.agent_outside_service.async_enter(self, waitable, 17, works=1) 
             yield
+        system.storage.remove(conv.kvs)
 
 class AsyncResource:
     def __init__(self, allowed_blocks):
@@ -212,9 +213,9 @@ class Tier(C_MM1):
         pass
 
     @abstractmethod
-    def remove(self, key):
+    def remove(self, keys):
         pass
-    
+
     @abstractmethod
     def has_key(self, key):
         pass
@@ -251,8 +252,8 @@ class DOCA_MEMOS(Tier):
             block_offset = range_idx * self.range_len + offset_in_range
             self.disk[block_offset] = key
         return []
-    
-    def remove(self, key):
+
+    def remove(self, keys):
         pass
 
     def has_key(self, key):
@@ -280,9 +281,30 @@ class LRU(Tier):
                 evicted.append(old)
         return evicted
 
-    def remove(self, key):
+    def remove(self, keys):
         pass
 
+    def has_key(self, key):
+        return key in self.keys
+
+class AllocRelease(Tier):
+    def __init__(self, system, num_queues, block_serve_time, num_blocks):
+        super().__init__(system, num_queues, block_serve_time, num_blocks) 
+        self.keys = set()
+
+    def write(self, keys_to_write):
+        remaining = []
+        for key in keys_to_write:
+            if len(self.keys) < self.num_blocks:
+                self.keys.add(key)
+            else:
+                remaining.append(key)
+        return remaining
+
+    def remove(self, keys):
+        for key in keys:
+            self.keys.discard(key)
+        
     def has_key(self, key):
         return key in self.keys
 
@@ -300,6 +322,8 @@ def build_storage_manager(system, params):
             if num_blocks % num_ranges != 0:
                 raise ValueError(f"memos num_blocks ({num_blocks}) must be divisible by num_ranges ({num_ranges})")
             tiers.append(DOCA_MEMOS(system, num_queues, block_serve_time, num_blocks, num_ranges))
+        elif t == 'allocrelease':
+            tiers.append(AllocRelease(system, num_queues, block_serve_time, num_blocks))
         else:
             raise ValueError(f"unknown storage tier type: {t!r}")
     return StorageManager(tiers)
@@ -317,8 +341,10 @@ class StorageManager:
 
     def try_read(self, handler, kvs, missing, waitable):
         return any(tier.try_read(handler, kvs, missing, waitable) for tier in self.tiers_list)
-
-  
+    
+    def remove(self, keys):
+        for tier in self.tiers_list:
+            tier.remove(keys)
 
 class System:
     def calculate_theoretical_bw(self):
