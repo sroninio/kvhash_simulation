@@ -91,9 +91,11 @@ class HandleWrapper:
             if should_wait:
                 yield
             if n_miss > 0:
-                system.gpus.async_enter(self, waitable, 17, works=n_miss, is_real_work=False) 
+                recalc_works = sum(i + 1 for i, m in enumerate(missing) if m) if system.params['is_linear_step_time'] else n_miss
+                system.gpus.async_enter(self, waitable, 17, works=recalc_works, is_real_work=False)
                 yield
-            system.gpus.async_enter(self, waitable, 17, works=1, is_real_work=True) 
+            real_works = len(conv.kvs) + 1 if system.params['is_linear_step_time'] else 1
+            system.gpus.async_enter(self, waitable, 17, works=real_works, is_real_work=True)
             yield
             conv.kvs.append(random.getrandbits(64) + 1) 
             system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]] + [conv.kvs[-1]])
