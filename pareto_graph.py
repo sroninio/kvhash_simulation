@@ -4,6 +4,10 @@ import argparse
 import csv
 import json
 import os
+import shutil
+from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
+
 import numpy as np
 import matplotlib.pyplot as plt
 from simulation_logic import System
@@ -12,8 +16,10 @@ BOLD_RED = '\033[1;31m'
 RESET = '\033[0m'
 X_LABEL = 'agents/user/sec'
 Y_LABEL = 'agents/sec'
-
-
+FIELDNAMES = [
+    'config_label', 'num_inflight_agents', 'iterations', 'minimal_inflight',
+    'actual_agents_per_second', 'agents_per_second_per_inflight', 'T',
+]
 def params_from_config(config, num_inflight_agents):
     params = {
         'blocks_buffers': config['blocks_buffers'],
@@ -65,43 +71,24 @@ def plot_from_csv(data_file, output):
     print(f"Plot saved as {output}")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--config_file", type=str, default=None)
-    parser.add_argument("-o", "--output", type=str, default="pareto_graph.png")
-    parser.add_argument("-d", "--data-file", type=str, default="pareto_results.csv")
-    parser.add_argument("-l", "--label", type=str, default=None)
-    parser.add_argument("--plot-only", action="store_true")
-    parser.add_argument("--fresh-csv", action="store_true", help="delete -d csv before run, then write new rows")
-    args = parser.parse_args()
+def _pareto_sweep_task(task):
+    return pareto_sweep(*task)
 
-    if args.plot_only:
-        plot_from_csv(args.data_file, args.output)
-        raise SystemExit
 
-    if not args.config_file:
-        parser.error("-f/--config_file is required unless --plot-only")
-
-    with open(args.config_file) as f:
+def pareto_sweep(config_file, label, n_sweeps, inflight_factor):
+    with open(config_file) as f:
         config = json.load(f)
-
-    label = args.label or os.path.splitext(os.path.basename(args.config_file))[0]
-    fieldnames = [
-        'config_label', 'num_inflight_agents', 'iterations', 'minimal_inflight',
-        'actual_agents_per_second', 'agents_per_second_per_inflight', 'T',
-    ]
-
+    label = label or os.path.splitext(os.path.basename(config_file))[0]
     probe = System(params_from_config(config, 1))
     minimal = probe.minimal_inflight_agents_for_max_possible_agents_per_second
-    max_inflight = 2 * minimal
-    inflights = [max(1, int(round(x))) for x in np.linspace(1, max_inflight, 10)]
-
-    xs, ys, rows = [], [], []
-    print(f"{BOLD_RED}=== pareto label={label} config={args.config_file} points={len(inflights)} ==={RESET}")
+    max_inflight = inflight_factor * minimal
+    inflights = [max(1, int(round(x))) for x in np.linspace(1, max_inflight, n_sweeps)]
+    rows, xs, ys = [], [], []
+    print(f"{BOLD_RED}=== pareto label={label} config={config_file} points={len(inflights)} ==={RESET}")
     for i, n in enumerate(inflights, 1):
         params = params_from_config(config, n)
         params['iterations'] = n * 1000
-        print(f"{BOLD_RED}=== sweep {i}/{len(inflights)} ==={RESET}")
+        print(f"{BOLD_RED}=== sweep {i}/{len(inflights)} [{label}] ==={RESET}")
         print(json.dumps(params, indent=2))
         system = System(params)
         system.simulate()
@@ -118,25 +105,108 @@ if __name__ == "__main__":
             'agents_per_second_per_inflight': x,
             'T': system.T,
         })
-        print(f"num_inflight_agents={n} actual_agents_per_second={actual:.6f} x={x:.6f}")
+        print(f"[{label}] num_inflight_agents={n} actual_agents_per_second={actual:.6f} x={x:.6f}")
+    return label, rows, xs, ys
 
-    if args.fresh_csv and os.path.exists(args.data_file):
-        os.remove(args.data_file)
-    write_header = args.fresh_csv or not os.path.exists(args.data_file)
-    with open(args.data_file, 'w' if args.fresh_csv else 'a', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
+
+def write_csv(data_file, all_rows, fresh):
+    if fresh and os.path.exists(data_file):
+        os.remove(data_file)
+    write_header = fresh or not os.path.exists(data_file)
+    with open(data_file, 'w' if fresh else 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=FIELDNAMES)
         if write_header:
             w.writeheader()
-        w.writerows(rows)
-    print(f"Data written to {args.data_file} (label={label})")
+        w.writerows(all_rows)
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(xs, ys, marker='o', linewidth=2, label=label)
-    plt.xlabel(X_LABEL)
-    plt.ylabel(Y_LABEL)
-    plt.title('Pareto: throughput vs per-agent throughput')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=300)
-    print(f"Plot saved as {args.output}")
+
+def resolve_labels(config_files, labels):
+    if not labels:
+        return [None] * len(config_files)
+    if len(labels) == 1:
+        return labels * len(config_files)
+    if len(labels) != len(config_files):
+        raise ValueError(f"expected 0, 1, or {len(config_files)} labels, got {len(labels)}")
+    return labels
+
+
+def setup_run_dir(results_root, config_files, sweeps, inflight_factor, jobs):
+    run_dir = os.path.join(results_root, datetime.now().strftime('%Y%m%d_%H%M%S'))
+    os.makedirs(run_dir, exist_ok=True)
+    seen = {}
+    copied = []
+    for cfg in config_files:
+        base = os.path.basename(cfg)
+        if base in seen:
+            seen[base] += 1
+            stem, ext = os.path.splitext(base)
+            dest_name = f"{stem}_{seen[base]}{ext}"
+        else:
+            seen[base] = 0
+            dest_name = base
+        shutil.copy2(cfg, os.path.join(run_dir, dest_name))
+        copied.append(dest_name)
+    with open(os.path.join(run_dir, 'run_meta.json'), 'w') as f:
+        json.dump({
+            'sweeps': sweeps,
+            'inflight_factor': inflight_factor,
+            'jobs': jobs,
+            'config_files': copied,
+        }, f, indent=2)
+    return run_dir
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-f", "--config-file", action="append", default=None)
+    parser.add_argument("-o", "--output", type=str, default="pareto_graph.png")
+    parser.add_argument("-d", "--data-file", type=str, default="pareto_results.csv")
+    parser.add_argument("-l", "--label", action="append", default=None)
+    parser.add_argument("-j", "--jobs", type=int, default=None)
+    parser.add_argument("--sweeps", type=int, default=10, help="number of inflight points from 1 to factor*minimal")
+    parser.add_argument("--inflight-factor", type=float, default=2.0)
+    parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument("--fresh-csv", action="store_true")
+    args = parser.parse_args()
+
+    if args.plot_only:
+        plot_from_csv(args.data_file, args.output)
+        raise SystemExit
+
+    if not args.config_file:
+        parser.error("at least one -f/--config_file is required unless --plot-only")
+    labels = resolve_labels(args.config_file, args.label)
+    jobs = args.jobs or min(len(args.config_file), os.cpu_count() or 1)
+    run_dir = setup_run_dir(args.results_dir, args.config_file, args.sweeps, args.inflight_factor, jobs)
+    data_file = os.path.join(run_dir, os.path.basename(args.data_file))
+    output = os.path.join(run_dir, os.path.basename(args.output))
+    print(f"Run directory: {run_dir}")
+    tasks = [
+        (cfg, lbl, args.sweeps, args.inflight_factor)
+        for cfg, lbl in zip(args.config_file, labels)
+    ]
+
+    if len(tasks) == 1:
+        _, rows, xs, ys = pareto_sweep(*tasks[0])
+        all_rows = rows
+        write_csv(data_file, all_rows, True)
+        print(f"Data written to {data_file} (label={rows[0]['config_label']})")
+        plt.figure(figsize=(10, 6))
+        plt.plot(xs, ys, marker='o', linewidth=2, label=rows[0]['config_label'])
+        plt.xlabel(X_LABEL)
+        plt.ylabel(Y_LABEL)
+        plt.title('Pareto: throughput vs per-agent throughput')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(output, dpi=300)
+        print(f"Plot saved as {output}")
+    else:
+        print(f"Running {len(tasks)} configs with {jobs} parallel workers")
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            results = list(pool.map(_pareto_sweep_task, tasks))
+        all_rows = [row for _, rows, _, _ in results for row in rows]
+        write_csv(data_file, all_rows, True)
+        print(f"Data written to {data_file} ({len(results)} configs, {len(all_rows)} rows)")
+        plot_from_csv(data_file, output)
