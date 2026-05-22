@@ -16,6 +16,7 @@ BOLD_RED = '\033[1;31m'
 RESET = '\033[0m'
 X_LABEL = 'agents/user/sec'
 Y_LABEL = 'agents/sec'
+CONCURRENCY_X_LABEL = 'concurrency'
 FIELDNAMES = [
     'config_label', 'num_inflight_agents', 'iterations', 'minimal_inflight',
     'actual_agents_per_second', 'agents_per_second_per_inflight', 'T',
@@ -50,11 +51,15 @@ def params_from_config(config, num_inflight_agents):
     return params
 
 
-def plot_from_csv(data_file, output):
+def load_series(data_file):
     series = {}
     with open(data_file) as f:
         for row in csv.DictReader(f):
             series.setdefault(row['config_label'], []).append(row)
+    return series
+
+
+def plot_pareto(series, output):
     plt.figure(figsize=(10, 6))
     for label in sorted(series):
         rows = sorted(series[label], key=lambda r: int(r['num_inflight_agents']))
@@ -69,6 +74,35 @@ def plot_from_csv(data_file, output):
     plt.tight_layout()
     plt.savefig(output, dpi=300)
     print(f"Plot saved as {output}")
+
+
+def plot_concurrency(series, output):
+    plt.figure(figsize=(10, 6))
+    for label in sorted(series):
+        rows = sorted(series[label], key=lambda r: int(r['num_inflight_agents']))
+        xs = [int(r['num_inflight_agents']) for r in rows]
+        ys = [float(r['actual_agents_per_second']) for r in rows]
+        plt.plot(xs, ys, marker='o', linewidth=2, label=label)
+    plt.xlabel(CONCURRENCY_X_LABEL)
+    plt.ylabel(Y_LABEL)
+    plt.title('Throughput vs concurrency')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output, dpi=300)
+    print(f"Plot saved as {output}")
+
+
+def plot_from_csv(data_file, output, concurrency_output=None):
+    series = load_series(data_file)
+    plot_pareto(series, output)
+    if concurrency_output:
+        plot_concurrency(series, concurrency_output)
+
+
+def concurrency_output_path(output):
+    stem, ext = os.path.splitext(output)
+    return stem + '_concurrency' + ext
 
 
 def _pareto_sweep_task(task):
@@ -167,11 +201,15 @@ if __name__ == "__main__":
     parser.add_argument("--inflight-factor", type=float, default=2.0)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument("--concurrency", action="store_true", help="also plot concurrency -> agents/sec")
+    parser.add_argument("--concurrency-output", type=str, default=None)
     parser.add_argument("--fresh-csv", action="store_true")
     args = parser.parse_args()
 
+    conc_out = args.concurrency_output or (concurrency_output_path(args.output) if args.concurrency else None)
+
     if args.plot_only:
-        plot_from_csv(args.data_file, args.output)
+        plot_from_csv(args.data_file, args.output, conc_out)
         raise SystemExit
 
     if not args.config_file:
@@ -187,21 +225,17 @@ if __name__ == "__main__":
         for cfg, lbl in zip(args.config_file, labels)
     ]
 
+    conc_out = os.path.join(run_dir, os.path.basename(conc_out)) if conc_out else None
+
     if len(tasks) == 1:
         _, rows, xs, ys = pareto_sweep(*tasks[0])
         all_rows = rows
         write_csv(data_file, all_rows, True)
         print(f"Data written to {data_file} (label={rows[0]['config_label']})")
-        plt.figure(figsize=(10, 6))
-        plt.plot(xs, ys, marker='o', linewidth=2, label=rows[0]['config_label'])
-        plt.xlabel(X_LABEL)
-        plt.ylabel(Y_LABEL)
-        plt.title('Pareto: throughput vs per-agent throughput')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(output, dpi=300)
-        print(f"Plot saved as {output}")
+        series = {rows[0]['config_label']: rows}
+        plot_pareto(series, output)
+        if conc_out:
+            plot_concurrency(series, conc_out)
     else:
         print(f"Running {len(tasks)} configs with {jobs} parallel workers")
         with ProcessPoolExecutor(max_workers=jobs) as pool:
@@ -209,4 +243,4 @@ if __name__ == "__main__":
         all_rows = [row for _, rows, _, _ in results for row in rows]
         write_csv(data_file, all_rows, True)
         print(f"Data written to {data_file} ({len(results)} configs, {len(all_rows)} rows)")
-        plot_from_csv(data_file, output)
+        plot_from_csv(data_file, output, conc_out)
