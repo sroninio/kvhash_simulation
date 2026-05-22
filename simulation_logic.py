@@ -36,10 +36,11 @@ class Waitable:
             
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length):
+    def __init__(self, conv_id, conversation_length, finished_steps=0):
         self.conv_id = conv_id
-        self.conversation_length = conversation_length 
-        self.kvs = []
+        self.conversation_length = conversation_length
+        self.finished_steps = finished_steps
+        self.kvs = [random.getrandbits(64) + 1 for _ in range(finished_steps)]
 
 
 class ConversationManager:
@@ -53,9 +54,8 @@ class ConversationManager:
         self.conv_id += 1
         return self.conv_id
     
-    def create_conversation(self):
-        conv = Conversation(self.get_unique_id(), self.steps)
-        return conv
+    def create_conversation(self, finished_steps=0):
+        return Conversation(self.get_unique_id(), self.steps, finished_steps)
 
 class HandleWrapper:
     def __init__(self, system, conv):
@@ -77,7 +77,7 @@ class HandleWrapper:
         waitable = Waitable()
         conv = self.conv
         system = self.system
-        for step in range(conv.conversation_length):
+        for step in range(conv.finished_steps, conv.conversation_length):
             n_read = len(conv.kvs)
             if n_read > 0:
                 if not system.blocks_buffers.acquire(n_read, self, waitable):
@@ -385,6 +385,7 @@ class System:
 
         self.completed_conversations = 0
         self.inflight_conversation_count = 0
+        self.stagger_spawns_done = 0
         self.misses = 0
         self.hits = 0
         self.total_busy_servers = 0
@@ -423,7 +424,12 @@ class System:
                 self.completed_conversations += 1
 
     def kick_off_new_conversation(self):
-        conv = self.conversation_manager.create_conversation()
+        finished_steps = 0
+        if self.stagger_spawns_done < self.num_inflight_agents:
+            n = self.params['steps'] - 1
+            finished_steps = 0 if n <= 0 else self.stagger_spawns_done % n
+            self.stagger_spawns_done += 1
+        conv = self.conversation_manager.create_conversation(finished_steps)
         self.inflight_conversation_count += 1
         HandleWrapper(self, conv).start()
 
