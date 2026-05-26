@@ -36,11 +36,11 @@ class Waitable:
             
 
 class Conversation:
-    def __init__(self, conv_id, conversation_length, finished_steps=0):
+    def __init__(self, conv_id, conversation_length, finished_steps=0, fixed_kv_count=0):
         self.conv_id = conv_id
         self.conversation_length = conversation_length
         self.finished_steps = finished_steps
-        self.kvs = [random.getrandbits(64) + 1 for _ in range(finished_steps)]
+        self.kvs = [random.getrandbits(64) + 1 for _ in range(max(0, fixed_kv_count or finished_steps))]
 
 
 class ConversationManager:
@@ -55,6 +55,8 @@ class ConversationManager:
         return self.conv_id
     
     def create_conversation(self, finished_steps=0):
+        if self.system.params.get('debug_full_kvc_each_step', False):
+            return Conversation(self.get_unique_id(), self.steps, finished_steps, fixed_kv_count=self.steps - 1)
         return Conversation(self.get_unique_id(), self.steps, finished_steps)
 
 class HandleWrapper:
@@ -97,8 +99,11 @@ class HandleWrapper:
             real_works = len(conv.kvs) + 1 if system.params['is_linear_step_time'] else 1
             system.gpus.async_enter(self, waitable, 17, works=real_works, is_real_work=True)
             yield
-            conv.kvs.append(random.getrandbits(64) + 1) 
-            system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]] + [conv.kvs[-1]])
+            if system.params.get('debug_full_kvc_each_step', False):
+                system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]])
+            else:
+                conv.kvs.append(random.getrandbits(64) + 1)
+                system.storage.write([conv.kvs[i] for i in range(len(missing)) if missing[i]] + [conv.kvs[-1]])
             if n_read > 0:
                 system.blocks_buffers.release(n_read)
             system.agent_outside_service.async_enter(self, waitable, 17, works=1) 
@@ -150,15 +155,16 @@ class async_server(ABC):
         return self._async_enter(handler, waitable, uid, works, is_real_work)
 
 class MMC(async_server):
-    def __init__(self, system, num_servers, serve_time, father = None):
+    def __init__(self, system, num_servers, serve_time, father=None, fixed_serve_time=False):
         super().__init__(system, num_servers, serve_time)
         self.free_server_slots = num_servers
         self.father = father
-    
+        self.fixed_serve_time = fixed_serve_time
+
     def _async_enter(self, handler, waitable, uid, works, is_real_work):
-        serve_time = works * (random.expovariate(1.0 / self.serve_time))
-        self.system.add_work_to_system(handler, self, serve_time, is_real_work, waitable)
-    
+        st = works * (self.serve_time if self.fixed_serve_time else random.expovariate(1.0 / self.serve_time))
+        self.system.add_work_to_system(handler, self, st, is_real_work, waitable)
+
     def enter_queue(self, handler, serve_time, is_real_work, waitable):
         self.total_queued += 1
         self.waiters_queue.append((handler, serve_time, is_real_work, waitable))
@@ -371,8 +377,7 @@ class System:
         self.T = 0
         self.event_counter = 0  # Tie-breaker for heap events
 
-
-        self.agent_outside_service = MMC(self, self.num_inflight_agents, self.params['time_between_steps'])
+        self.agent_outside_service = MMC(self, self.num_inflight_agents, self.params['time_between_steps'], None, self.params['debug_fixed_between_steps_time'])
         if self.params['scheduling_strategy'] == "shared_storage_least_busy":
             self.gpus = MMC(self, self.params['total_gpus'], self.params['step_time_in_gpu'])
         else:
@@ -415,7 +420,7 @@ class System:
         if len(mmc.waiters_queue) > 0:
             (handler, serve_time, is_real_work, waitable) = mmc.exit_queue()
             mmc.enter_service(is_real_work)
-            self.push_event(self.T + serve_time, {'type': 'handler', 'handler': handler, 'mmc': mmc, 'is_real_work': is_real_work, 'waitable': waitable}) 
+            self.push_event(self.T + serve_time, {'type': 'handler', 'handler': handler, 'mmc': mmc, 'is_real_work': is_real_work, 'waitable': waitable})
         waitable_of_completed  = event_dict['waitable']
         waitable_of_completed.remove_waiter()
         if waitable_of_completed.all_waited():

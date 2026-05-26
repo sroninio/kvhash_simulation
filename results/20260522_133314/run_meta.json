@@ -1,0 +1,10 @@
+{
+  "sweeps": 20,
+  "inflight_factor": 2.0,
+  "jobs": 3,
+  "config_files": [
+    "inifinite_storage.json",
+    "limited_hbm_only.json",
+    "recompute.json"
+  ]
+}

@@ -79,8 +79,10 @@ if __name__ == "__main__":
         'force_hit_ratio': config.get('force_hit_ratio', 0),
         'scheduling_strategy': config.get('scheduling_strategy', 'shared_storage_least_busy'),
         'is_use_theoretical_agents': config.get('is_use_theoretical_agents', 0),
+        'debug_full_kvc_each_step': config.get('debug_full_kvc_each_step', False),
+        'debug_fixed_between_steps_time': config.get('debug_fixed_between_steps_time', False),
         'output_file': config.get('output_file', f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"),
-        'monitor_interval_virtual_time': config.get('monitor_interval_virtual_time', 0)
+        'monitor_interval_virtual_time': config.get('monitor_interval_virtual_time', 700)
     }
     for i, tier in enumerate(params['storage_tiers']):
         for key in ('type', 'num_blocks', 'num_queues', 'block_serve_time'):

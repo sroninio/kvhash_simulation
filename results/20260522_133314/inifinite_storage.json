@@ -1,0 +1,27 @@
+{
+  "num_inflight_agents": 230,
+  "steps": 10,
+  "iterations": 30000000,
+  "time_between_steps": 50,
+  "step_time_in_gpu": 1,
+  "is_linear_step_time": true,
+  "total_gpus": 20,
+  "is_use_theoretical_agents": 0,
+  "monitor_interval_virtual_time": 700,
+  "allow_holes_recalculation": 1,
+  "random_placement_on_miss": 0,
+  "evict_on_miss": 1,
+  "context_window_size": 0,
+  "force_hit_ratio": 0.0,
+  "scheduling_strategy": "shared_storage_least_busy",
+  "output_file": "simulation_results.xlsx",
+  "blocks_buffers": 200,
+  "storage_tiers": [
+    {
+      "type": "lru",
+      "num_blocks": 80000,
+      "num_queues": 0,
+      "block_serve_time": 0
+    }
+  ]
+}

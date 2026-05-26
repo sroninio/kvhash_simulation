@@ -1,0 +1,12 @@
+{
+  "sweeps": 20,
+  "inflight_factor": 2.0,
+  "jobs": 8,
+  "config_files": [
+    "recompute.json",
+    "limited_hbm_and_cmx_waterfall.json",
+    "inifinite_storage.json",
+    "cmx_only.json",
+    "limited_hbm_and_cmx_neighbours.json"
+  ]
+}
